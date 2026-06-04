@@ -1,0 +1,85 @@
+package com.nathan.twitchdropsminer.android
+
+import androidx.datastore.preferences.core.preferencesOf
+import com.nathan.twitchdropsminer.android.data.local.GamePriorityOrder
+import com.nathan.twitchdropsminer.android.data.local.SettingsPreferencesMapper
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class SettingsPersistenceTest {
+    @Test
+    fun mapsPreferencesAndNormalizesLocalRuntimeSettings() {
+        val preferences = preferencesOf(
+            SettingsPreferencesMapper.HasCompletedOnboarding to true,
+            SettingsPreferencesMapper.WatchIntervalSeconds to 3,
+            SettingsPreferencesMapper.InventoryRefreshMinutes to 5,
+            SettingsPreferencesMapper.UseSampleDataFallback to true,
+            SettingsPreferencesMapper.FallbackToAutoWhenPrioritizedComplete to true,
+            SettingsPreferencesMapper.FallbackToAutoWhenNoPrioritizedChannel to true,
+            SettingsPreferencesMapper.KeepActiveScreenMode to true,
+            SettingsPreferencesMapper.SelectedCampaignIds to setOf("campaign-1"),
+            SettingsPreferencesMapper.SelectedGamePriority to """["Game B","Game A"]""",
+        )
+
+        val settings = SettingsPreferencesMapper.fromPreferences(preferences)
+
+        assertTrue(settings.hasCompletedOnboarding)
+        assertTrue(settings.useSampleDataFallback)
+        assertTrue(settings.fallbackToAutoWhenPrioritizedComplete)
+        assertTrue(settings.fallbackToAutoWhenNoPrioritizedChannel)
+        assertTrue(settings.keepActiveScreenMode)
+        assertEquals(20, settings.watchIntervalSeconds)
+        assertEquals(15, settings.inventoryRefreshMinutes)
+        assertEquals(setOf("campaign-1"), settings.selectedCampaignIds)
+        assertEquals(listOf("Game B", "Game A"), settings.selectedGamePriority)
+        assertEquals(setOf("Game B", "Game A"), settings.selectedGames)
+    }
+
+    @Test
+    fun migratesLegacySelectedGamesIntoStablePriorityOrder() {
+        val preferences = preferencesOf(
+            SettingsPreferencesMapper.SelectedGames to setOf("Zulu Game", "Alpha Game"),
+        )
+
+        val settings = SettingsPreferencesMapper.fromPreferences(preferences)
+
+        assertEquals(listOf("Alpha Game", "Zulu Game"), settings.selectedGamePriority)
+    }
+
+    @Test
+    fun sampleFallbackDefaultsToExplicitOptIn() {
+        val settings = SettingsPreferencesMapper.fromPreferences(preferencesOf())
+
+        assertEquals(false, settings.useSampleDataFallback)
+        assertEquals(false, settings.sampleMode)
+    }
+
+    @Test
+    fun manualPriorityNumbersClampAndReorderSequentially() {
+        val priority = listOf("Alpha", "Bravo", "Charlie", "Delta")
+
+        assertEquals(
+            listOf("Charlie", "Alpha", "Bravo", "Delta"),
+            GamePriorityOrder.set(priority, "Charlie", 1),
+        )
+        assertEquals(
+            listOf("Alpha", "Charlie", "Delta", "Bravo"),
+            GamePriorityOrder.set(priority, "Bravo", 99),
+        )
+        assertEquals(
+            listOf("Delta", "Alpha", "Bravo", "Charlie"),
+            GamePriorityOrder.set(priority, "Delta", 0),
+        )
+    }
+
+    @Test
+    fun manualPriorityNumbersRemoveDuplicateGameConflicts() {
+        val priority = listOf("Alpha", "Bravo", "alpha", "Charlie")
+
+        assertEquals(
+            listOf("Bravo", "Alpha", "Charlie"),
+            GamePriorityOrder.set(priority, "Alpha", 2),
+        )
+    }
+}

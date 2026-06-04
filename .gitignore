@@ -1,0 +1,44 @@
+/.gradle/
+/.kotlin/
+/build/
+/app/build/
+
+# Local Android SDK and IDE state
+local.properties
+/.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Generated APK/AAB outputs if copied outside build/
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Local signing and service secrets
+keystore.properties
+secrets.properties
+*.jks
+*.keystore
+*.p12
+*.pem
+google-services.json
+
+# Local environment and release signing outputs
+.env
+.env.*
+release/
+outputs/
+
+# Logs and temporary files
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

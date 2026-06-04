@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Twitch Drops Miner</string>
+    <string name="notification_channel_name">Local miner runtime</string>
+    <string name="notification_channel_description">Shows local mining status while the Android app runs Twitch Drops work.</string>
+</resources>

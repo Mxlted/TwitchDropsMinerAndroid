@@ -3,6 +3,7 @@ package com.nathan.twitchdropsminer.android
 import com.nathan.twitchdropsminer.android.data.backend.BackendMappers
 import com.nathan.twitchdropsminer.android.data.model.LoginState
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -62,6 +63,7 @@ class BackendMappersTest {
 
         assertEquals(1, campaigns.size)
         assertEquals("Game", campaigns.first().gameName)
+        assertFalse(campaigns.first().linkStatusKnown)
         assertEquals(0.5f, campaigns.first().progress, 0.001f)
         assertEquals("Badge", campaigns.first().drops.first().rewards.first().name)
     }

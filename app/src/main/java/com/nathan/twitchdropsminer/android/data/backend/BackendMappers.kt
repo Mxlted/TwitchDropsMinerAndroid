@@ -62,6 +62,7 @@ class BackendMappers(
                 startsAt = obj.instantOrNull("starts_at"),
                 endsAt = obj.instantOrNull("ends_at"),
                 linked = obj.booleanOrFalse("linked"),
+                linkStatusKnown = obj.containsKey("linked"),
                 active = obj.booleanOrFalse("active"),
                 upcoming = obj.booleanOrFalse("upcoming"),
                 expired = obj.booleanOrFalse("expired"),

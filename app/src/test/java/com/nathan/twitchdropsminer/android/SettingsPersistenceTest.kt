@@ -1,6 +1,7 @@
 package com.nathan.twitchdropsminer.android
 
 import androidx.datastore.preferences.core.preferencesOf
+import com.nathan.twitchdropsminer.android.data.local.GamePriorityCleanup
 import com.nathan.twitchdropsminer.android.data.local.GamePriorityOrder
 import com.nathan.twitchdropsminer.android.data.local.SettingsPreferencesMapper
 import org.junit.Assert.assertEquals
@@ -17,6 +18,7 @@ class SettingsPersistenceTest {
             SettingsPreferencesMapper.UseSampleDataFallback to true,
             SettingsPreferencesMapper.FallbackToAutoWhenPrioritizedComplete to true,
             SettingsPreferencesMapper.FallbackToAutoWhenNoPrioritizedChannel to true,
+            SettingsPreferencesMapper.AllowWatchingUnlinkedGames to true,
             SettingsPreferencesMapper.KeepActiveScreenMode to true,
             SettingsPreferencesMapper.SelectedCampaignIds to setOf("campaign-1"),
             SettingsPreferencesMapper.SelectedGamePriority to """["Game B","Game A"]""",
@@ -28,6 +30,7 @@ class SettingsPersistenceTest {
         assertTrue(settings.useSampleDataFallback)
         assertTrue(settings.fallbackToAutoWhenPrioritizedComplete)
         assertTrue(settings.fallbackToAutoWhenNoPrioritizedChannel)
+        assertTrue(settings.allowWatchingUnlinkedGames)
         assertTrue(settings.keepActiveScreenMode)
         assertEquals(20, settings.watchIntervalSeconds)
         assertEquals(15, settings.inventoryRefreshMinutes)
@@ -53,6 +56,7 @@ class SettingsPersistenceTest {
 
         assertEquals(false, settings.useSampleDataFallback)
         assertEquals(false, settings.sampleMode)
+        assertEquals(false, settings.allowWatchingUnlinkedGames)
     }
 
     @Test
@@ -81,5 +85,16 @@ class SettingsPersistenceTest {
             listOf("Bravo", "Alpha", "Charlie"),
             GamePriorityOrder.set(priority, "Alpha", 2),
         )
+    }
+
+    @Test
+    fun priorityCleanupRemovesGamesWithoutAvailableCampaigns() {
+        val cleanup = GamePriorityCleanup.removeUnavailable(
+            current = listOf("Alpha", "Bravo", "alpha", "Charlie"),
+            availableGameNames = listOf("bravo", "Charlie"),
+        )
+
+        assertEquals(listOf("Bravo", "Charlie"), cleanup.retainedPriority)
+        assertEquals(listOf("Alpha"), cleanup.removedGames)
     }
 }

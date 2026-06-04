@@ -16,6 +16,7 @@ data class AppSettings(
     val useSampleDataFallback: Boolean = false,
     val fallbackToAutoWhenPrioritizedComplete: Boolean = false,
     val fallbackToAutoWhenNoPrioritizedChannel: Boolean = false,
+    val allowWatchingUnlinkedGames: Boolean = false,
     // Legacy campaign IDs are retained so older saved preferences keep loading.
     val selectedCampaignIds: Set<String> = emptySet(),
     // Legacy unordered game set. selectedGamePriority is the source of truth.

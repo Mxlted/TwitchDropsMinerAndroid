@@ -15,9 +15,13 @@ import com.nathan.twitchdropsminer.android.runtime.CampaignPrioritySelector
 import com.nathan.twitchdropsminer.android.runtime.CampaignSelectionMode
 import com.nathan.twitchdropsminer.android.runtime.MinerRuntimeReducer
 import com.nathan.twitchdropsminer.android.runtime.SampleTwitchData
+import com.nathan.twitchdropsminer.android.runtime.UnlinkedProgressProbe
+import com.nathan.twitchdropsminer.android.runtime.UnlinkedProgressProbeResult
+import java.time.Duration
 import java.time.Instant
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RuntimeStateTest {
@@ -105,6 +109,25 @@ class RuntimeStateTest {
     }
 
     @Test
+    fun gamePriorityChecksLowerPriorityWorkBeforeCompleteFallback() {
+        val completeFirstPriority = completedCampaign("campaign-1", "First Priority")
+        val earnableSecondPriority = earnableCampaign("campaign-2", "Second Priority")
+        val unselected = earnableCampaign("campaign-3", "Unselected")
+        val settings = AppSettings(
+            selectedGamePriority = listOf("First Priority", "Second Priority"),
+            fallbackToAutoWhenPrioritizedComplete = true,
+        ).normalized()
+
+        val decision = CampaignPrioritySelector.initialDecision(
+            settings,
+            listOf(completeFirstPriority, unselected, earnableSecondPriority),
+        )
+
+        assertEquals(CampaignSelectionMode.Prioritized, (decision as CampaignCandidateDecision.Try).mode)
+        assertEquals(listOf("campaign-2"), decision.candidates.map { it.id })
+    }
+
+    @Test
     fun gamePriorityDoesNotFallBackToUnselectedGames() {
         val campaign = earnableCampaign("campaign-1", "Unselected Game")
         val settings = AppSettings(selectedGamePriority = listOf("Selected Game")).normalized()
@@ -139,6 +162,28 @@ class RuntimeStateTest {
             (enabledDecision as CampaignCandidateDecision.Try).mode,
         )
         assertEquals(listOf("campaign-2"), enabledDecision.candidates.map { it.id })
+    }
+
+    @Test
+    fun completeFallbackRequiresAllPrioritizedGamesToBeComplete() {
+        val completeFirstPriority = completedCampaign("campaign-1", "First Priority")
+        val completeSecondPriority = completedCampaign("campaign-2", "Second Priority")
+        val other = earnableCampaign("campaign-3", "Other Game")
+        val settings = AppSettings(
+            selectedGamePriority = listOf("First Priority", "Second Priority"),
+            fallbackToAutoWhenPrioritizedComplete = true,
+        ).normalized()
+
+        val decision = CampaignPrioritySelector.initialDecision(
+            settings,
+            listOf(completeFirstPriority, other, completeSecondPriority),
+        )
+
+        assertEquals(
+            CampaignSelectionMode.AutoFallbackPrioritiesComplete,
+            (decision as CampaignCandidateDecision.Try).mode,
+        )
+        assertEquals(listOf("campaign-3"), decision.candidates.map { it.id })
     }
 
     @Test
@@ -182,6 +227,181 @@ class RuntimeStateTest {
         assertEquals(false, settings.useSampleDataFallback)
         assertEquals(false, settings.sampleMode)
         assertEquals("No available campaign can be mined", (decision as CampaignCandidateDecision.Idle).task)
+    }
+
+    @Test
+    fun unlinkedGamesAreSkippedWhenSettingIsDisabled() {
+        val unlinked = unlinkedCampaign("campaign-1", "Unlinked Game")
+        val settings = AppSettings().normalized()
+
+        val decision = CampaignPrioritySelector.initialDecision(settings, listOf(unlinked))
+
+        assertEquals("No available campaign can be mined", (decision as CampaignCandidateDecision.Idle).task)
+        assertEquals(emptyList<Campaign>(), CampaignPrioritySelector.candidates(settings, listOf(unlinked)))
+    }
+
+    @Test
+    fun unlinkedGamesCanBeTriedAfterLinkedAutoCandidates() {
+        val linked = earnableCampaign("campaign-1", "Linked Game")
+        val unlinked = unlinkedCampaign("campaign-2", "Unlinked Game")
+        val settings = AppSettings(allowWatchingUnlinkedGames = true).normalized()
+
+        val initialDecision = CampaignPrioritySelector.initialDecision(
+            settings,
+            listOf(unlinked, linked),
+        )
+        val afterLinkedNoChannel = CampaignPrioritySelector.afterNoChannelDecision(
+            settings,
+            listOf(unlinked, linked),
+            CampaignSelectionMode.Auto,
+        )
+
+        assertEquals(CampaignSelectionMode.Auto, (initialDecision as CampaignCandidateDecision.Try).mode)
+        assertEquals(listOf("campaign-1"), initialDecision.candidates.map { it.id })
+        assertEquals(
+            CampaignSelectionMode.Unlinked,
+            (afterLinkedNoChannel as CampaignCandidateDecision.Try).mode,
+        )
+        assertEquals(listOf("campaign-2"), afterLinkedNoChannel.candidates.map { it.id })
+    }
+
+    @Test
+    fun prioritizedUnlinkedGameCanBeTriedWhenExplicitlyEnabled() {
+        val unlinked = unlinkedCampaign("campaign-1", "Priority Game")
+        val settings = AppSettings(
+            selectedGamePriority = listOf("Priority Game"),
+            allowWatchingUnlinkedGames = true,
+        ).normalized()
+
+        val decision = CampaignPrioritySelector.initialDecision(settings, listOf(unlinked))
+
+        assertEquals(CampaignSelectionMode.Unlinked, (decision as CampaignCandidateDecision.Try).mode)
+        assertEquals(listOf("campaign-1"), decision.candidates.map { it.id })
+    }
+
+    @Test
+    fun prioritizedUnlinkedGameIsNotTriedWhenSettingIsDisabled() {
+        val unlinked = unlinkedCampaign("campaign-1", "Priority Game")
+        val settings = AppSettings(
+            selectedGamePriority = listOf("Priority Game"),
+            allowWatchingUnlinkedGames = false,
+        ).normalized()
+
+        val decision = CampaignPrioritySelector.initialDecision(settings, listOf(unlinked))
+
+        assertEquals("No prioritized game can be mined", (decision as CampaignCandidateDecision.Idle).task)
+    }
+
+    @Test
+    fun noChannelFallbackCanTryPrioritizedUnlinkedWithoutAutoFallback() {
+        val linked = earnableCampaign("campaign-1", "Linked Priority")
+        val unlinked = unlinkedCampaign("campaign-2", "Unlinked Priority")
+        val outsidePriority = unlinkedCampaign("campaign-3", "Outside Priority")
+        val settings = AppSettings(
+            selectedGamePriority = listOf("Linked Priority", "Unlinked Priority"),
+            fallbackToAutoWhenNoPrioritizedChannel = false,
+            allowWatchingUnlinkedGames = true,
+        ).normalized()
+
+        val decision = CampaignPrioritySelector.afterNoPrioritizedChannelDecision(
+            settings,
+            listOf(outsidePriority, unlinked, linked),
+        )
+
+        assertEquals(CampaignSelectionMode.Unlinked, (decision as CampaignCandidateDecision.Try).mode)
+        assertEquals(listOf("campaign-2"), decision.candidates.map { it.id })
+    }
+
+    @Test
+    fun autoFallbackThenUnlinkedKeepsPriorityOrderWithinUnlinkedCandidates() {
+        val linked = earnableCampaign("campaign-1", "Linked Priority")
+        val prioritizedUnlinked = unlinkedCampaign("campaign-2", "Unlinked Priority", requiredMinutes = 30)
+        val outsidePriority = unlinkedCampaign("campaign-3", "Outside Priority", requiredMinutes = 10)
+        val settings = AppSettings(
+            selectedGamePriority = listOf("Linked Priority", "Unlinked Priority"),
+            fallbackToAutoWhenNoPrioritizedChannel = true,
+            allowWatchingUnlinkedGames = true,
+        ).normalized()
+
+        val decision = CampaignPrioritySelector.afterNoChannelDecision(
+            settings,
+            listOf(outsidePriority, prioritizedUnlinked, linked),
+            CampaignSelectionMode.AutoFallbackNoPrioritizedChannel,
+        )
+
+        assertEquals(CampaignSelectionMode.Unlinked, (decision as CampaignCandidateDecision.Try).mode)
+        assertEquals(listOf("campaign-2", "campaign-3"), decision.candidates.map { it.id })
+    }
+
+    @Test
+    fun candidateOrderIsPrioritizedThenLinkedThenUnlinked() {
+        val prioritized = earnableCampaign("campaign-1", "Priority Game")
+        val linked = earnableCampaign("campaign-2", "Linked Game")
+        val unlinked = unlinkedCampaign("campaign-3", "Unlinked Game")
+        val settings = AppSettings(
+            selectedGamePriority = listOf("Priority Game"),
+            fallbackToAutoWhenNoPrioritizedChannel = true,
+            allowWatchingUnlinkedGames = true,
+        ).normalized()
+        val campaigns = listOf(unlinked, linked, prioritized)
+
+        val initialDecision = CampaignPrioritySelector.initialDecision(settings, campaigns)
+        val afterPriorityNoChannel = CampaignPrioritySelector.afterNoChannelDecision(
+            settings,
+            campaigns,
+            CampaignSelectionMode.Prioritized,
+        )
+        val afterLinkedNoChannel = CampaignPrioritySelector.afterNoChannelDecision(
+            settings,
+            campaigns,
+            CampaignSelectionMode.AutoFallbackNoPrioritizedChannel,
+        )
+
+        assertEquals(
+            CampaignSelectionMode.Prioritized,
+            (initialDecision as CampaignCandidateDecision.Try).mode,
+        )
+        assertEquals(listOf("campaign-1"), initialDecision.candidates.map { it.id })
+        assertEquals(
+            CampaignSelectionMode.AutoFallbackNoPrioritizedChannel,
+            (afterPriorityNoChannel as CampaignCandidateDecision.Try).mode,
+        )
+        assertEquals(listOf("campaign-2"), afterPriorityNoChannel.candidates.map { it.id })
+        assertEquals(
+            CampaignSelectionMode.Unlinked,
+            (afterLinkedNoChannel as CampaignCandidateDecision.Try).mode,
+        )
+        assertEquals(listOf("campaign-3"), afterLinkedNoChannel.candidates.map { it.id })
+    }
+
+    @Test
+    fun unlinkedGameWithNoProgressIsSkippedAfterCheckWindow() {
+        val now = Instant.parse("2026-06-04T12:00:00Z")
+        val settings = AppSettings(watchIntervalSeconds = 20).normalized()
+        val campaign = unlinkedCampaign("campaign-1", "Unlinked Game", currentMinutes = 5)
+        val probe = UnlinkedProgressProbe.start(campaign, settings, now)
+
+        val result = probe.observe(campaign, now.plus(Duration.ofMinutes(2)))
+
+        assertTrue(result is UnlinkedProgressProbeResult.Skip)
+    }
+
+    @Test
+    fun unlinkedGameWithProgressContinuesWatching() {
+        val now = Instant.parse("2026-06-04T12:00:00Z")
+        val settings = AppSettings(watchIntervalSeconds = 20).normalized()
+        val campaign = unlinkedCampaign("campaign-1", "Unlinked Game", currentMinutes = 5)
+        val progressed = unlinkedCampaign("campaign-1", "Unlinked Game", currentMinutes = 6)
+        val probe = UnlinkedProgressProbe.start(campaign, settings, now)
+
+        val result = probe.observe(progressed, now.plus(Duration.ofMinutes(2)))
+
+        assertTrue(result is UnlinkedProgressProbeResult.Continue)
+        val continued = result as UnlinkedProgressProbeResult.Continue
+        assertEquals(true, continued.progressDetectedNow)
+        assertEquals(true, continued.probe.progressDetected)
+        val laterResult = continued.probe.observe(progressed, now.plus(Duration.ofMinutes(10)))
+        assertTrue(laterResult is UnlinkedProgressProbeResult.Continue)
     }
 
     @Test
@@ -261,4 +481,21 @@ private fun earnableCampaign(
                 rewards = emptyList(),
             ),
         ),
+    )
+
+private fun unlinkedCampaign(
+    id: String,
+    gameName: String,
+    currentMinutes: Int = 0,
+    requiredMinutes: Int = 60,
+): Campaign =
+    earnableCampaign(
+        id = id,
+        gameName = gameName,
+        currentMinutes = currentMinutes,
+        requiredMinutes = requiredMinutes,
+    ).copy(
+        linked = false,
+        linkStatusKnown = true,
+        linkUrl = "https://example.test/link",
     )

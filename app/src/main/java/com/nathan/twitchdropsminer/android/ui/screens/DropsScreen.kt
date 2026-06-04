@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -55,6 +56,7 @@ fun DropsScreen(
 ) {
     var query by remember { mutableStateOf("") }
     var compactView by rememberSaveable { mutableStateOf(false) }
+    var gamesLinkFilter by rememberSaveable { mutableStateOf(GamesLinkFilter.All) }
     var currentView by rememberSaveable {
         mutableStateOf(
             if (settings.hasGamePriority) {
@@ -85,8 +87,8 @@ fun DropsScreen(
                 )
         }
     }
-    val filteredAllSummaries = remember(allGameSummaries, query) {
-        allGameSummaries.filter { it.matches(query) }
+    val filteredAllSummaries = remember(allGameSummaries, query, gamesLinkFilter) {
+        allGameSummaries.filter { it.matches(query) && it.matches(gamesLinkFilter) }
     }
 
     LazyColumn(
@@ -116,6 +118,12 @@ fun DropsScreen(
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     label = { Text("Filter available games") },
+                )
+            }
+            item {
+                GamesLinkFilterToggle(
+                    currentFilter = gamesLinkFilter,
+                    onFilterChanged = { gamesLinkFilter = it },
                 )
             }
         }
@@ -159,7 +167,7 @@ fun DropsScreen(
 
                     filteredAllSummaries.isEmpty() -> {
                         item {
-                            EmptyState("No games match the current filter.")
+                            EmptyState(gamesLinkFilter.emptyStateMessage(query))
                         }
                     }
 
@@ -266,6 +274,56 @@ private fun CampaignsViewToggle(
             ) {
                 Text("Games")
             }
+        }
+    }
+}
+
+@Composable
+private fun GamesLinkFilterToggle(
+    currentFilter: GamesLinkFilter,
+    onFilterChanged: (GamesLinkFilter) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        GamesLinkFilterButton(
+            filter = GamesLinkFilter.All,
+            currentFilter = currentFilter,
+            onFilterChanged = onFilterChanged,
+        )
+        GamesLinkFilterButton(
+            filter = GamesLinkFilter.Linked,
+            currentFilter = currentFilter,
+            onFilterChanged = onFilterChanged,
+        )
+        GamesLinkFilterButton(
+            filter = GamesLinkFilter.Unlinked,
+            currentFilter = currentFilter,
+            onFilterChanged = onFilterChanged,
+        )
+    }
+}
+
+@Composable
+private fun RowScope.GamesLinkFilterButton(
+    filter: GamesLinkFilter,
+    currentFilter: GamesLinkFilter,
+    onFilterChanged: (GamesLinkFilter) -> Unit,
+) {
+    if (filter == currentFilter) {
+        Button(
+            onClick = { onFilterChanged(filter) },
+            modifier = Modifier.weight(1f),
+        ) {
+            Text(filter.label)
+        }
+    } else {
+        OutlinedButton(
+            onClick = { onFilterChanged(filter) },
+            modifier = Modifier.weight(1f),
+        ) {
+            Text(filter.label)
         }
     }
 }
@@ -386,7 +444,13 @@ private fun GameCampaignCardHeader(
                 )
             }
         }
-        StatusPill(summary.priorityStatusLabel)
+        Column(
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            StatusPill(summary.priorityStatusLabel)
+            StatusPill(summary.linkStatusLabel, color = summary.linkStatusColor())
+        }
     }
 }
 
@@ -500,6 +564,18 @@ private enum class CampaignsView {
     AllAvailable,
 }
 
+private enum class GamesLinkFilter(val label: String) {
+    All("All"),
+    Linked("Linked"),
+    Unlinked("Unlinked"),
+}
+
+private enum class GameAccountLinkState(val label: String) {
+    Linked("Linked"),
+    Unlinked("Unlinked"),
+    Unknown("Unknown"),
+}
+
 private data class GameCampaignSummary(
     val gameName: String,
     val campaigns: List<Campaign>,
@@ -514,7 +590,13 @@ private data class GameCampaignSummary(
     val totalDrops: Int = campaigns.sumOf { it.totalDrops }
     val claimableDrops: Int = drops.count { it.canClaim }
     val remainingMinutes: Int = drops.sumOf { it.remainingMinutes }
-    val hasLinkTarget: Boolean = campaigns.any { it.linkUrl != null }
+    val linkState: GameAccountLinkState = when {
+        campaigns.isEmpty() -> GameAccountLinkState.Unknown
+        linkedCampaigns > 0 -> GameAccountLinkState.Linked
+        campaigns.any { (it.linkStatusKnown && !it.linked) || it.linkUrl != null } ->
+            GameAccountLinkState.Unlinked
+        else -> GameAccountLinkState.Unknown
+    }
     val campaignNames: String = when {
         campaigns.isEmpty() -> "No loaded campaign details"
         else -> campaigns
@@ -535,22 +617,24 @@ private data class GameCampaignSummary(
     }
     val priorityStatusLabel: String =
         priorityIndex?.let { "Priority ${it + 1}" } ?: "Available"
+    val linkStatusLabel: String = linkState.label
     val regularStatusLine: String = when {
         campaigns.isEmpty() -> "No available campaign details loaded."
-        else -> "$activeCampaigns/$campaignCount active campaigns, " +
+        else -> "${linkState.label}, $activeCampaigns/$campaignCount active campaigns, " +
             "$claimedDrops/$totalDrops drops claimed, ${remainingMinutes}m remaining"
     }
     val compactStatusLine: String = when {
         campaigns.isEmpty() -> "No loaded campaign details"
-        claimableDrops > 0 -> "$claimableDrops ready, drops $claimedDrops/$totalDrops"
-        else -> "$activeCampaigns/$campaignCount active, drops $claimedDrops/$totalDrops, " +
+        claimableDrops > 0 -> "${linkState.label}, $claimableDrops ready, drops $claimedDrops/$totalDrops"
+        else -> "${linkState.label}, $activeCampaigns/$campaignCount active, drops $claimedDrops/$totalDrops, " +
             "${remainingMinutes}m left"
     }
     val eligibilityLabel: String = when {
         campaigns.isEmpty() -> "No available campaign details loaded"
         claimableDrops > 0 -> "$claimableDrops drops ready to claim"
         earnableCampaigns > 0 -> "Eligible linked campaign available"
-        linkedCampaigns == 0 && hasLinkTarget -> "Link account before this game can earn drops"
+        linkState == GameAccountLinkState.Unlinked -> "Link account before this game can earn drops"
+        linkState == GameAccountLinkState.Unknown -> "Linked account status is unknown"
         activeCampaigns == 0 -> "Campaigns are not active yet"
         totalDrops > 0 && claimedDrops >= totalDrops -> "All drops claimed"
         else -> "No locally earnable drops right now"
@@ -559,8 +643,14 @@ private data class GameCampaignSummary(
 
 private fun GameCampaignSummary.eligibilityColor() = when {
     claimableDrops > 0 || earnableCampaigns > 0 -> AppAccent
-    linkedCampaigns == 0 && hasLinkTarget -> AppWarning
+    linkState == GameAccountLinkState.Unlinked -> AppWarning
     else -> AppMuted
+}
+
+private fun GameCampaignSummary.linkStatusColor() = when (linkState) {
+    GameAccountLinkState.Linked -> AppAccent.copy(alpha = 0.16f)
+    GameAccountLinkState.Unlinked -> AppWarning.copy(alpha = 0.22f)
+    GameAccountLinkState.Unknown -> AppMuted.copy(alpha = 0.18f)
 }
 
 private fun GameCampaignSummary.matches(query: String): Boolean {
@@ -569,6 +659,23 @@ private fun GameCampaignSummary.matches(query: String): Boolean {
         gameName.contains(trimmed, ignoreCase = true) ||
         campaigns.any { it.name.contains(trimmed, ignoreCase = true) }
 }
+
+private fun GameCampaignSummary.matches(filter: GamesLinkFilter): Boolean = when (filter) {
+    GamesLinkFilter.All -> true
+    GamesLinkFilter.Linked -> linkState == GameAccountLinkState.Linked
+    GamesLinkFilter.Unlinked -> linkState == GameAccountLinkState.Unlinked
+}
+
+private fun GamesLinkFilter.emptyStateMessage(query: String): String =
+    if (query.isBlank()) {
+        when (this) {
+            GamesLinkFilter.All -> "No games match the current filter."
+            GamesLinkFilter.Linked -> "No linked games loaded."
+            GamesLinkFilter.Unlinked -> "No unlinked games loaded."
+        }
+    } else {
+        "No games match the current filter."
+    }
 
 private fun List<Campaign>.toGameCampaignSummaries(settings: AppSettings): List<GameCampaignSummary> {
     val groups = groupBy { it.gameName.ifBlank { "Unknown game" } }

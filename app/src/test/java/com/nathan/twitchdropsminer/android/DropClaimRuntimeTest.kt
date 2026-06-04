@@ -16,8 +16,10 @@ import com.nathan.twitchdropsminer.android.runtime.DropClaimHandler
 import com.nathan.twitchdropsminer.android.runtime.DropClaimPreparation
 import com.nathan.twitchdropsminer.android.runtime.DropClaimResolver
 import com.nathan.twitchdropsminer.android.runtime.RuntimeClaimOutcome
+import com.nathan.twitchdropsminer.android.runtime.claimableDropsFor
 import java.time.Duration
 import java.time.Instant
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -47,6 +49,35 @@ class DropClaimRuntimeTest {
         )
 
         assertTrue(preparation is DropClaimPreparation.NotClaimable)
+    }
+
+    @Test
+    fun unlinkedCompletedDropCanBeClaimedWhenTwitchReportsCompletion() {
+        val fakeApi = FakeTwitchApi(DropClaimResult(DropClaimOutcome.Claimed))
+        val handler = DropClaimHandler(fakeApi)
+        val unlinkedCampaign = campaign().copy(linked = false)
+
+        val preparation = DropClaimResolver.prepare(
+            session = session(),
+            campaign = unlinkedCampaign,
+            drop = completedDrop(),
+        )
+        val result = runBlocking {
+            handler.claim(session(), unlinkedCampaign, completedDrop())
+        }
+
+        assertTrue(preparation is DropClaimPreparation.Ready)
+        assertEquals(RuntimeClaimOutcome.Claimed, result.outcome)
+        assertEquals(listOf("claim-1"), fakeApi.claimIds)
+    }
+
+    @Test
+    fun unlinkedCompletedDropIsIncludedInClaimSweep() {
+        val unlinkedCampaign = campaign().copy(linked = false)
+
+        val claimableDrops = unlinkedCampaign.claimableDropsFor(session())
+
+        assertEquals(listOf("drop-1"), claimableDrops.map { it.id })
     }
 
     @Test
@@ -106,6 +137,56 @@ class DropClaimRuntimeTest {
         assertEquals(2, fakeApi.claimIds.size)
     }
 
+    @Test
+    fun failedUnlinkedClaimIsNotRetriedAfterFirstAttempt() {
+        var now = Instant.parse("2026-06-03T12:00:00Z")
+        val fakeApi = FakeTwitchApi(
+            DropClaimResult(
+                outcome = DropClaimOutcome.Failed,
+                twitchStatus = "NOT_ELIGIBLE",
+                message = "Game account is not linked.",
+            ),
+        )
+        val handler = DropClaimHandler(
+            twitchApi = fakeApi,
+            attemptTracker = ClaimAttemptTracker(
+                failureCooldown = Duration.ofMinutes(5),
+                now = { now },
+            ),
+        )
+        val unlinkedCampaign = campaign().copy(linked = false, linkStatusKnown = true)
+
+        val first = runBlocking { handler.claim(session(), unlinkedCampaign, completedDrop()) }
+        val second = runBlocking { handler.claim(session(), unlinkedCampaign, completedDrop()) }
+        now = now.plus(Duration.ofMinutes(6))
+        val third = runBlocking { handler.claim(session(), unlinkedCampaign, completedDrop()) }
+
+        assertEquals(RuntimeClaimOutcome.Failed, first.outcome)
+        assertEquals(null, first.retryAt)
+        assertEquals(RuntimeClaimOutcome.Suppressed, second.outcome)
+        assertEquals(RuntimeClaimOutcome.Suppressed, third.outcome)
+        assertTrue(second.message.orEmpty().contains("Unlinked campaign claim already failed"))
+        assertEquals(listOf("claim-1"), fakeApi.claimIds)
+    }
+
+    @Test
+    fun claimCancellationIsRethrownAndNotRecordedAsFailure() {
+        val fakeApi = FakeTwitchApi(
+            claimFailure = CancellationException("stopping miner"),
+        )
+        val handler = DropClaimHandler(fakeApi)
+
+        try {
+            runBlocking { handler.claim(session(), campaign(), completedDrop()) }
+            error("CancellationException should be rethrown")
+        } catch (error: CancellationException) {
+            assertEquals("stopping miner", error.message)
+        }
+
+        assertEquals(null, handler.suppressionFor(session(), campaign(), completedDrop()))
+        assertEquals(listOf("claim-1"), fakeApi.claimIds)
+    }
+
     private fun session(): StoredTwitchSession =
         StoredTwitchSession(
             accessToken = "token",
@@ -145,7 +226,8 @@ class DropClaimRuntimeTest {
 }
 
 private class FakeTwitchApi(
-    private val claimResult: DropClaimResult,
+    private val claimResult: DropClaimResult = DropClaimResult(DropClaimOutcome.Claimed),
+    private val claimFailure: Throwable? = null,
 ) : TwitchApi {
     val claimIds = mutableListOf<String>()
 
@@ -181,6 +263,7 @@ private class FakeTwitchApi(
 
     override suspend fun claimDrop(session: StoredTwitchSession, dropInstanceId: String): DropClaimResult {
         claimIds += dropInstanceId
+        claimFailure?.let { throw it }
         return claimResult
     }
 

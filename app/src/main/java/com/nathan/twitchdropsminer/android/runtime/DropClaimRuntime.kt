@@ -10,6 +10,7 @@ import com.nathan.twitchdropsminer.android.data.twitch.TwitchApiErrorType
 import com.nathan.twitchdropsminer.android.data.twitch.TwitchApiException
 import java.time.Duration
 import java.time.Instant
+import kotlinx.coroutines.CancellationException
 
 private val DefaultClaimFailureCooldown: Duration = Duration.ofMinutes(5)
 
@@ -91,7 +92,7 @@ internal class ClaimAttemptTracker(
         val record = attempts[attemptKey] ?: return null
         if (record.terminal) {
             return ClaimAttemptSuppression(
-                message = "Drop claim already reached a terminal result this run.",
+                message = record.message ?: "Drop claim already reached a terminal result this run.",
                 retryAt = null,
             )
         }
@@ -106,8 +107,12 @@ internal class ClaimAttemptTracker(
         }
     }
 
-    fun recordTerminal(attemptKey: String) {
-        attempts[attemptKey] = ClaimAttemptRecord(terminal = true, retryAt = null)
+    fun recordTerminal(attemptKey: String, message: String? = null) {
+        attempts[attemptKey] = ClaimAttemptRecord(
+            terminal = true,
+            retryAt = null,
+            message = message,
+        )
     }
 
     fun recordFailure(attemptKey: String): Instant {
@@ -123,6 +128,7 @@ internal class ClaimAttemptTracker(
     private data class ClaimAttemptRecord(
         val terminal: Boolean,
         val retryAt: Instant?,
+        val message: String? = null,
     )
 }
 
@@ -210,7 +216,15 @@ internal class DropClaimHandler(
         return try {
             twitchApi.claimDrop(session, resolved.claimId).toRuntimeResult(campaign, drop, resolved)
         } catch (error: TwitchApiException) {
-            val retryAt = attemptTracker.recordFailure(resolved.attemptKey)
+            val retryAt = if (campaign.isKnownUnlinked) {
+                attemptTracker.recordTerminal(
+                    resolved.attemptKey,
+                    UnlinkedClaimFailureSuppressionMessage,
+                )
+                null
+            } else {
+                attemptTracker.recordFailure(resolved.attemptKey)
+            }
             RuntimeClaimResult(
                 outcome = error.type.toRuntimeOutcome(),
                 campaign = campaign,
@@ -219,8 +233,18 @@ internal class DropClaimHandler(
                 message = error.message,
                 retryAt = retryAt,
             )
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: Throwable) {
-            val retryAt = attemptTracker.recordFailure(resolved.attemptKey)
+            val retryAt = if (campaign.isKnownUnlinked) {
+                attemptTracker.recordTerminal(
+                    resolved.attemptKey,
+                    UnlinkedClaimFailureSuppressionMessage,
+                )
+                null
+            } else {
+                attemptTracker.recordFailure(resolved.attemptKey)
+            }
             RuntimeClaimResult(
                 outcome = RuntimeClaimOutcome.UnexpectedResponse,
                 campaign = campaign,
@@ -251,6 +275,12 @@ internal class DropClaimHandler(
         val retryAt = if (outcome == RuntimeClaimOutcome.Claimed || outcome == RuntimeClaimOutcome.AlreadyClaimed) {
             attemptTracker.recordTerminal(resolved.attemptKey)
             null
+        } else if (campaign.isKnownUnlinked) {
+            attemptTracker.recordTerminal(
+                resolved.attemptKey,
+                UnlinkedClaimFailureSuppressionMessage,
+            )
+            null
         } else {
             attemptTracker.recordFailure(resolved.attemptKey)
         }
@@ -274,6 +304,9 @@ internal class DropClaimHandler(
             TwitchApiErrorType.UnexpectedResponse -> RuntimeClaimOutcome.UnexpectedResponse
         }
 }
+
+private const val UnlinkedClaimFailureSuppressionMessage =
+    "Unlinked campaign claim already failed this run; link the game account before retrying."
 
 internal fun Campaign.claimableDropsFor(session: StoredTwitchSession): List<CampaignDrop> =
     if (upcoming) {

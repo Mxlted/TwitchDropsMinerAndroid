@@ -81,6 +81,75 @@ class TwitchApiClientCampaignFetchTest {
         }
     }
 
+    @Test
+    fun allowedCampaignChannelIsChosenBeforeDirectoryDiscovery() {
+        val server = MockWebServer()
+        server.start()
+        try {
+            server.enqueue(jsonResponse(streamInfoPayload(gameName = "Target Game")))
+            val client = TwitchApiClient(
+                okHttpClient = OkHttpClient(),
+                gqlEndpoint = server.url("/gql").toString(),
+            )
+
+            val channels = runBlocking {
+                client.fetchEligibleChannels(
+                    session = session(),
+                    campaign = Campaign(
+                        id = "campaign-1",
+                        name = "Campaign",
+                        gameName = "Target Game",
+                        allowedChannels = listOf(Channel(id = 1, name = "allowed_channel")),
+                    ),
+                )
+            }
+
+            assertEquals(1, channels.size)
+            assertEquals("allowed_channel", channels.single().name)
+            assertTrue(channels.single().aclBased)
+            assertEquals(1, server.requestCount)
+            assertTrue(server.takeRequest().body.readUtf8().contains("VideoPlayerStreamInfoOverlayChannel"))
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun unrestrictedChannelDiscoveryUsesDropsEnabledDirectoryFilter() {
+        val server = MockWebServer()
+        server.start()
+        try {
+            server.enqueue(jsonResponse(slugRedirectPayload()))
+            server.enqueue(jsonResponse(directoryPayload()))
+            val client = TwitchApiClient(
+                okHttpClient = OkHttpClient(),
+                gqlEndpoint = server.url("/gql").toString(),
+            )
+
+            val channels = runBlocking {
+                client.fetchEligibleChannels(
+                    session = session(),
+                    campaign = Campaign(
+                        id = "campaign-1",
+                        name = "Campaign",
+                        gameName = "Target Game",
+                    ),
+                )
+            }
+
+            assertEquals(1, channels.size)
+            assertEquals("drops_streamer", channels.single().name)
+            assertEquals(true, channels.single().dropsEnabled)
+
+            val requestBodies = List(2) { server.takeRequest().body.readUtf8() }
+            assertTrue(requestBodies[0].contains("\"operationName\":\"DirectoryGameRedirect\""))
+            assertTrue(requestBodies[1].contains("\"operationName\":\"DirectoryPage_Game\""))
+            assertTrue(requestBodies[1].contains("DROPS_ENABLED"))
+        } finally {
+            server.shutdown()
+        }
+    }
+
     private fun jsonResponse(body: String): MockResponse =
         MockResponse()
             .setResponseCode(200)
@@ -174,6 +243,47 @@ class TwitchApiClientCampaignFetchTest {
                   }
                 ],
                 "allow": {"channels": []}
+              }
+            }
+          }
+        }
+        """.trimIndent()
+
+    private fun slugRedirectPayload(): String =
+        """
+        {
+          "data": {
+            "game": {
+              "slug": "target-game"
+            }
+          }
+        }
+        """.trimIndent()
+
+    private fun directoryPayload(): String =
+        """
+        {
+          "data": {
+            "game": {
+              "streams": {
+                "edges": [
+                  {
+                    "node": {
+                      "id": "broadcast-2",
+                      "title": "Drops enabled stream",
+                      "viewersCount": 450,
+                      "broadcaster": {
+                        "id": "67890",
+                        "login": "drops_streamer",
+                        "displayName": "drops_streamer"
+                      },
+                      "game": {
+                        "id": "game-1",
+                        "displayName": "Target Game"
+                      }
+                    }
+                  }
+                ]
               }
             }
           }

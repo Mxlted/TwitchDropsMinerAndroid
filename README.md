@@ -11,6 +11,7 @@ It is intended as a mobile Android alternative to desktop Twitch Drops mining to
 * Game priority list
 * Auto Mode when no priority games are selected
 * Optional fallback from priority games to other eligible campaigns
+* Optional unlinked-game watching with progress checks
 * Foreground service for active mining
 * Persistent notification while mining is running
 * Activity and log screens
@@ -94,6 +95,8 @@ When priority games are selected, the app follows that order. If no games are pr
 
 Settings allow fallback behavior when priority games are complete or when they do not have an eligible live channel.
 
+The **Allow watching unlinked games** setting is off by default. When enabled, the miner tries prioritized games first, then linked eligible games, then unlinked games. Unlinked watching is treated as speculative: the app checks real Twitch progress after a short window and moves to the next unlinked game if progress does not increase.
+
 ## Keep Active Screen
 
 Keep active screen mode shows a black fullscreen screen while keeping the display awake. This can help during long sessions where the app needs to stay active.
@@ -108,6 +111,7 @@ This mode uses more battery and should only be enabled when needed.
 * Network changes, VPNs, captive portals, and device vendor policies can interrupt watch progress.
 * Websocket progress updates are not fully ported yet.
 * Claim behavior still needs more live testing with real completed claimable drops.
+* Unlinked-game watching is optional and stops trying a game when Twitch progress does not increase.
 * Optional sample data is only for testing and does not represent live Twitch campaign state.
 
 ## Security

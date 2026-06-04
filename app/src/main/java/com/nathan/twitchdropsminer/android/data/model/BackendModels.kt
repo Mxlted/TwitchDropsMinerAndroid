@@ -80,6 +80,7 @@ data class Campaign(
     val startsAt: Instant? = null,
     val endsAt: Instant? = null,
     val linked: Boolean = false,
+    val linkStatusKnown: Boolean = true,
     val active: Boolean = false,
     val upcoming: Boolean = false,
     val expired: Boolean = false,
@@ -107,10 +108,19 @@ data class Campaign(
     val remainingMinutes: Int
         get() = drops.sumOf { it.remainingMinutes }
 
-    val canEarnLocally: Boolean
-        get() = active && linked && drops.any {
+    val hasEarnableDrops: Boolean
+        get() = drops.any {
             !it.isClaimed && (it.remainingMinutes > 0 || it.canClaim || it.hasCompletedProgress)
         }
+
+    val isKnownUnlinked: Boolean
+        get() = !linked && (linkStatusKnown || linkUrl != null)
+
+    val canEarnLocally: Boolean
+        get() = active && linked && hasEarnableDrops
+
+    val canTryUnlinkedLocally: Boolean
+        get() = active && isKnownUnlinked && hasEarnableDrops
 }
 
 data class Channel(

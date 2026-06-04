@@ -26,6 +26,7 @@ class TwitchCampaignMapperTest {
         assertEquals(1f, drop.progress, 0.001f)
         assertEquals("benefit-1", drop.rewards.single().id)
         assertEquals("BADGE", drop.rewards.single().type)
+        assertTrue(campaign.linkStatusKnown)
     }
 
     @Test
@@ -39,7 +40,18 @@ class TwitchCampaignMapperTest {
         assertEquals(0, campaign.drops.single().currentMinutes)
     }
 
-    private fun campaignJson() = json.parseToJsonElement(
+    @Test
+    fun missingSelfLinkFieldMarksStatusUnknown() {
+        val campaign = TwitchCampaignMapper.campaignFromJson(
+            campaignJson(includeSelf = false),
+            emptyMap(),
+        ) ?: error("campaign should parse")
+
+        assertFalse(campaign.linked)
+        assertFalse(campaign.linkStatusKnown)
+    }
+
+    private fun campaignJson(includeSelf: Boolean = true) = json.parseToJsonElement(
         """
         {
           "id": "campaign-1",
@@ -52,7 +64,7 @@ class TwitchCampaignMapperTest {
             "displayName": "Game",
             "boxArtURL": "https://static-cdn.jtvnw.net/game.jpg"
           },
-          "self": {"isAccountConnected": true},
+          ${if (includeSelf) """"self": {"isAccountConnected": true},""" else ""}
           "timeBasedDrops": [
             {
               "id": "drop-1",

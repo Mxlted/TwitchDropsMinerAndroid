@@ -74,6 +74,7 @@ class MainActivity : ComponentActivity() {
                     viewModel::setFallbackToAutoWhenPrioritizedComplete,
                 onFallbackToAutoWhenNoPrioritizedChannelChanged =
                     viewModel::setFallbackToAutoWhenNoPrioritizedChannel,
+                onAllowWatchingUnlinkedGamesChanged = viewModel::setAllowWatchingUnlinkedGames,
                 onAdvancedBackendModeChanged = viewModel::setAdvancedBackendMode,
                 onSaveBackendUrl = viewModel::saveBackendUrl,
                 onDebugLoggingChanged = viewModel::setDebugLogging,

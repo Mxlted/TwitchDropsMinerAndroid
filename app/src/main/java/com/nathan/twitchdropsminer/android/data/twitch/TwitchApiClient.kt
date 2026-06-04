@@ -11,6 +11,7 @@ import java.io.IOException
 import java.time.Instant
 import java.util.UUID
 import java.util.zip.GZIPOutputStream
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -249,7 +250,7 @@ class TwitchApiClient(
         if (campaignId.isNullOrBlank()) {
             return null
         }
-        return runCatching {
+        return runCatchingCancellable {
             gql(
                 session,
                 TwitchOperation.CampaignDetails.request(
@@ -267,9 +268,16 @@ class TwitchApiClient(
         campaign: Campaign,
         limit: Int,
     ): List<Channel> {
-        if (campaign.allowedChannels.isNotEmpty()) {
-            return campaign.allowedChannels.mapNotNull { channel ->
-                runCatching { fetchChannel(session, channel.name, campaign.gameName) }.getOrNull()
+        val allowedChannels = campaign.allowedChannels
+            .distinctBy { it.name.lowercase() }
+            .take(limit.coerceAtLeast(1))
+        if (allowedChannels.isNotEmpty()) {
+            // Campaign ACL membership is the strongest eligibility signal Twitch exposes here.
+            // Bound the live checks so large allow-lists do not become slow channel scans.
+            return allowedChannels.mapNotNull { channel ->
+                runCatchingCancellable {
+                    fetchChannel(session, channel.name, campaign.gameName)
+                }.getOrNull()
             }.filter { it.online && it.dropsEnabled }
         }
 
@@ -641,6 +649,10 @@ private fun JsonObject.toCampaign(claimedBenefits: Map<String, Instant>): Campai
     val startsAt = this["startAt"].asInstantOrNull()
     val endsAt = this["endAt"].asInstantOrNull()
     val status = this["status"].asStringOrNull()
+    val linkUrl = this["accountLinkURL"].asStringOrNull()
+    val self = this["self"].asObjectOrNull()
+    val linked = self?.get("isAccountConnected").asBool(false)
+    val linkStatusKnown = self?.containsKey("isAccountConnected") == true || linkUrl != null
     val allowedChannels = this.path("allow")["channels"].asArray()
         .mapNotNull { it.asObjectOrNull()?.toAllowedChannel() }
     return Campaign(
@@ -651,10 +663,11 @@ private fun JsonObject.toCampaign(claimedBenefits: Map<String, Instant>): Campai
             ?: "Unknown game",
         gameBoxArtUrl = game?.get("boxArtURL").asStringOrNull(),
         campaignUrl = "https://www.twitch.tv/drops/campaigns?dropID=${this["id"].asString()}",
-        linkUrl = this["accountLinkURL"].asStringOrNull(),
+        linkUrl = linkUrl,
         startsAt = startsAt,
         endsAt = endsAt,
-        linked = this.path("self")["isAccountConnected"].asBool(false),
+        linked = linked,
+        linkStatusKnown = linkStatusKnown,
         active = status == "ACTIVE" || (startsAt != null && endsAt != null && now >= startsAt && now < endsAt),
         upcoming = status == "UPCOMING" || (startsAt != null && now < startsAt),
         expired = status == "EXPIRED" || (endsAt != null && now >= endsAt),
@@ -746,7 +759,9 @@ private fun JsonObject.toDropReward(): DropReward =
 private fun JsonObject.toAllowedChannel(): Channel =
     Channel(
         id = this["id"].asLong(0L),
-        name = this["displayName"].asString(this["name"].asString("channel")),
+        name = this["login"].asString(
+            this["name"].asString(this["displayName"].asString("channel")),
+        ),
         aclBased = true,
     )
 
@@ -805,3 +820,14 @@ private fun JsonElement?.asInstantOrNull(): Instant? =
 @Suppress("unused")
 private fun JsonElement?.asFloat(default: Float): Float =
     this?.jsonPrimitive?.floatOrNull ?: default
+
+private suspend inline fun <T> runCatchingCancellable(
+    crossinline block: suspend () -> T,
+): Result<T> =
+    try {
+        Result.success(block())
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Throwable) {
+        Result.failure(error)
+    }

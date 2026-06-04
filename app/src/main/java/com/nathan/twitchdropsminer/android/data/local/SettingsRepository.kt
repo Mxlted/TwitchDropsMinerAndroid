@@ -117,6 +117,25 @@ class SettingsRepository(
             )
         }
     }
+
+    suspend fun removeGamePrioritiesWithoutAvailableCampaigns(
+        availableGameNames: Collection<String>,
+    ): List<String> {
+        var removedGames = emptyList<String>()
+        update { settings ->
+            val cleanup = GamePriorityCleanup.removeUnavailable(
+                current = settings.selectedGamePriority,
+                availableGameNames = availableGameNames,
+            )
+            removedGames = cleanup.removedGames
+            if (cleanup.removedGames.isEmpty()) {
+                settings
+            } else {
+                settings.withGamePriority(cleanup.retainedPriority)
+            }
+        }
+        return removedGames
+    }
 }
 
 internal object GamePriorityOrder {
@@ -180,6 +199,32 @@ internal object GamePriorityOrder {
         indexOfFirst { it.equals(gameName, ignoreCase = true) }
 }
 
+internal data class GamePriorityCleanupResult(
+    val retainedPriority: List<String>,
+    val removedGames: List<String>,
+)
+
+internal object GamePriorityCleanup {
+    fun removeUnavailable(
+        current: List<String>,
+        availableGameNames: Collection<String>,
+    ): GamePriorityCleanupResult {
+        val available = availableGameNames
+            .map { it.trim().lowercase() }
+            .filter { it.isNotBlank() }
+            .toSet()
+        val normalizedPriority = current
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase() }
+        val retained = normalizedPriority.filter { it.lowercase() in available }
+        return GamePriorityCleanupResult(
+            retainedPriority = retained,
+            removedGames = normalizedPriority.filterNot { it.lowercase() in available },
+        )
+    }
+}
+
 private fun AppSettings.withGamePriority(selected: List<String>): AppSettings =
     copy(
         selectedCampaignIds = emptySet(),
@@ -205,6 +250,7 @@ object SettingsPreferencesMapper {
         booleanPreferencesKey("fallback_to_auto_when_prioritized_complete")
     val FallbackToAutoWhenNoPrioritizedChannel =
         booleanPreferencesKey("fallback_to_auto_when_no_prioritized_channel")
+    val AllowWatchingUnlinkedGames = booleanPreferencesKey("allow_watching_unlinked_games")
     val SampleMode = booleanPreferencesKey("sample_mode")
     val SelectedCampaignIds = stringSetPreferencesKey("selected_campaign_ids")
     val SelectedGames = stringSetPreferencesKey("selected_games")
@@ -234,6 +280,7 @@ object SettingsPreferencesMapper {
                 preferences[FallbackToAutoWhenPrioritizedComplete] ?: false,
             fallbackToAutoWhenNoPrioritizedChannel =
                 preferences[FallbackToAutoWhenNoPrioritizedChannel] ?: false,
+            allowWatchingUnlinkedGames = preferences[AllowWatchingUnlinkedGames] ?: false,
             sampleMode = preferences[SampleMode] ?: false,
             selectedCampaignIds = preferences[SelectedCampaignIds] ?: emptySet(),
             selectedGames = preferences[SelectedGames] ?: emptySet(),
@@ -257,6 +304,7 @@ object SettingsPreferencesMapper {
             settings.fallbackToAutoWhenPrioritizedComplete
         preferences[FallbackToAutoWhenNoPrioritizedChannel] =
             settings.fallbackToAutoWhenNoPrioritizedChannel
+        preferences[AllowWatchingUnlinkedGames] = settings.allowWatchingUnlinkedGames
         preferences[SampleMode] = settings.sampleMode
         preferences[SelectedCampaignIds] = settings.selectedCampaignIds
         preferences[SelectedGames] = settings.selectedGames

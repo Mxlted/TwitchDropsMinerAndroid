@@ -39,6 +39,7 @@ fun SettingsScreen(
     onSampleFallbackChanged: (Boolean) -> Unit,
     onFallbackToAutoWhenPrioritizedCompleteChanged: (Boolean) -> Unit,
     onFallbackToAutoWhenNoPrioritizedChannelChanged: (Boolean) -> Unit,
+    onAllowWatchingUnlinkedGamesChanged: (Boolean) -> Unit,
     onAdvancedBackendModeChanged: (Boolean) -> Unit,
     onSaveBackendUrl: (String) -> Unit,
     onDebugLoggingChanged: (Boolean) -> Unit,
@@ -125,6 +126,12 @@ fun SettingsScreen(
                 subtitle = "Switch to Auto Mode when prioritized games have work but no eligible live channel.",
                 checked = settings.fallbackToAutoWhenNoPrioritizedChannel,
                 onCheckedChange = onFallbackToAutoWhenNoPrioritizedChannelChanged,
+            )
+            ToggleRow(
+                title = "Allow watching unlinked games",
+                subtitle = "After prioritized and linked games are tried, watch unlinked games only if Twitch progress increases.",
+                checked = settings.allowWatchingUnlinkedGames,
+                onCheckedChange = onAllowWatchingUnlinkedGamesChanged,
             )
         }
 

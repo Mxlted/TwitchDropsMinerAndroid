@@ -197,6 +197,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setAllowWatchingUnlinkedGames(enabled: Boolean) {
+        viewModelScope.launch {
+            graph.settingsRepository.update {
+                it.copy(allowWatchingUnlinkedGames = enabled)
+            }
+        }
+    }
+
     fun setAdvancedBackendMode(enabled: Boolean) {
         viewModelScope.launch {
             graph.settingsRepository.update { it.copy(advancedBackendMode = enabled) }

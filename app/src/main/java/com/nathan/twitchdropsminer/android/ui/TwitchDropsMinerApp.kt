@@ -71,6 +71,7 @@ fun TwitchDropsMinerApp(
     onSampleFallbackChanged: (Boolean) -> Unit,
     onFallbackToAutoWhenPrioritizedCompleteChanged: (Boolean) -> Unit,
     onFallbackToAutoWhenNoPrioritizedChannelChanged: (Boolean) -> Unit,
+    onAllowWatchingUnlinkedGamesChanged: (Boolean) -> Unit,
     onAdvancedBackendModeChanged: (Boolean) -> Unit,
     onSaveBackendUrl: (String) -> Unit,
     onDebugLoggingChanged: (Boolean) -> Unit,
@@ -114,6 +115,7 @@ fun TwitchDropsMinerApp(
                         onFallbackToAutoWhenPrioritizedCompleteChanged,
                     onFallbackToAutoWhenNoPrioritizedChannelChanged =
                         onFallbackToAutoWhenNoPrioritizedChannelChanged,
+                    onAllowWatchingUnlinkedGamesChanged = onAllowWatchingUnlinkedGamesChanged,
                     onAdvancedBackendModeChanged = onAdvancedBackendModeChanged,
                     onSaveBackendUrl = onSaveBackendUrl,
                     onDebugLoggingChanged = onDebugLoggingChanged,
@@ -145,6 +147,7 @@ private fun MainScaffold(
     onSampleFallbackChanged: (Boolean) -> Unit,
     onFallbackToAutoWhenPrioritizedCompleteChanged: (Boolean) -> Unit,
     onFallbackToAutoWhenNoPrioritizedChannelChanged: (Boolean) -> Unit,
+    onAllowWatchingUnlinkedGamesChanged: (Boolean) -> Unit,
     onAdvancedBackendModeChanged: (Boolean) -> Unit,
     onSaveBackendUrl: (String) -> Unit,
     onDebugLoggingChanged: (Boolean) -> Unit,
@@ -213,6 +216,7 @@ private fun MainScaffold(
                         onFallbackToAutoWhenPrioritizedCompleteChanged,
                     onFallbackToAutoWhenNoPrioritizedChannelChanged =
                         onFallbackToAutoWhenNoPrioritizedChannelChanged,
+                    onAllowWatchingUnlinkedGamesChanged = onAllowWatchingUnlinkedGamesChanged,
                     onAdvancedBackendModeChanged = onAdvancedBackendModeChanged,
                     onSaveBackendUrl = onSaveBackendUrl,
                     onDebugLoggingChanged = onDebugLoggingChanged,

@@ -1,8 +1,8 @@
 # Twitch Drops Miner Android
 
-Twitch Drops Miner Android is an unofficial Android app for tracking Twitch Drops campaigns, prioritizing games, keeping watch progress active, and claiming completed drops from a phone.
+Twitch Drops Miner Android is an unofficial Android Twitch Drops Miner app for tracking Twitch Drops campaigns, choosing game priorities, keeping eligible watch progress active, and claiming completed drops from a phone.
 
-It is built for people who want a mobile version of the Twitch Drops mining workflow without needing to keep a desktop app open.
+It is intended as a mobile Android alternative to desktop Twitch Drops mining tools for users who want to manage Twitch Drops, campaigns, game priorities, and claimable drops without leaving a desktop miner running.
 
 ## Features
 

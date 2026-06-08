@@ -51,6 +51,18 @@ class SettingsPersistenceTest {
     }
 
     @Test
+    fun malformedSavedGamePriorityJsonFallsBackToEmptyList() {
+        val preferences = preferencesOf(
+            SettingsPreferencesMapper.SelectedGamePriority to "not-valid-json",
+        )
+
+        val settings = SettingsPreferencesMapper.fromPreferences(preferences)
+
+        assertEquals(emptyList<String>(), settings.selectedGamePriority)
+        assertEquals(emptySet<String>(), settings.selectedGames)
+    }
+
+    @Test
     fun sampleFallbackDefaultsToExplicitOptIn() {
         val settings = SettingsPreferencesMapper.fromPreferences(preferencesOf())
 

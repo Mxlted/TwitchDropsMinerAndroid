@@ -6,6 +6,10 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import androidx.core.app.NotificationManagerCompat
+import com.nathan.twitchdropsminer.android.data.model.LoginState
+import com.nathan.twitchdropsminer.android.data.model.RuntimePhase
+import com.nathan.twitchdropsminer.android.data.model.RuntimeSnapshot
 import com.nathan.twitchdropsminer.android.di.AppGraph
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -30,29 +34,61 @@ class MinerForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ActionStop) {
-            notificationJob?.cancel()
-            notificationJob = null
+            stopMinerAndService(startId, "Foreground local miner service stopped")
+            return START_NOT_STICKY
+        }
+
+        // On a sticky/null-intent restart, refuse to mine invisibly: a foreground service
+        // must show its ongoing notification. If the user disabled notifications, stop cleanly.
+        if (!NotificationManagerCompat.from(this).areNotificationsEnabled()) {
             serviceScope.launch {
-                graph.localMinerRuntime.stopMiningAndJoin()
-                graph.logRepository.append("INFO", "Foreground local miner service stopped")
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf(startId)
+                graph.logRepository.load()
+                graph.logRepository.append(
+                    "WARN",
+                    "Notifications are disabled; stopping foreground local miner so it does not run invisibly",
+                )
             }
+            stopMinerAndService(startId, "Foreground local miner service stopped (notifications disabled)")
             return START_NOT_STICKY
         }
 
         startForegroundCompat(notifications.initial())
+        graph.localMinerRuntime.startMining()
         if (notificationJob == null) {
             notificationJob = serviceScope.launch {
                 graph.logRepository.load()
                 graph.logRepository.append("INFO", "Foreground local miner service started")
                 graph.localMinerRuntime.snapshot.collectLatest { snapshot ->
                     notifications.update(snapshot)
+                    // A non-recoverable terminal state (an expired/invalid Twitch token that the
+                    // runtime cannot retry) must not leave the service alive forever with a stale
+                    // ongoing notification. Tear it down instead.
+                    if (snapshot.isNonRecoverableTerminal()) {
+                        stopMinerAndService(
+                            startId,
+                            "Foreground local miner service stopped after Twitch session needs renewal",
+                        )
+                    }
                 }
             }
         }
-        graph.localMinerRuntime.startMining()
         return START_STICKY
+    }
+
+    /**
+     * Cancels the runtime, removes the foreground notification, and stops the service.
+     * Cancellation is awaited (stopMiningAndJoin) before the notification is removed so the
+     * watch loop is not still running after the service goes away.
+     */
+    private fun stopMinerAndService(startId: Int, logMessage: String) {
+        notificationJob?.cancel()
+        notificationJob = null
+        serviceScope.launch {
+            graph.localMinerRuntime.stopMiningAndJoin()
+            graph.logRepository.append("INFO", logMessage)
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf(startId)
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -96,3 +132,11 @@ class MinerForegroundService : Service() {
             Intent(context, MinerForegroundService::class.java).setAction(ActionStop)
     }
 }
+
+/**
+ * True when the runtime has stopped because the stored Twitch session expired or became invalid.
+ * The runtime cancels its own mining job in this case and cannot recover without a new login, so
+ * the foreground service should stop rather than idle forever showing a stale notification.
+ */
+internal fun RuntimeSnapshot.isNonRecoverableTerminal(): Boolean =
+    phase == RuntimePhase.Authenticating && account.state == LoginState.Expired

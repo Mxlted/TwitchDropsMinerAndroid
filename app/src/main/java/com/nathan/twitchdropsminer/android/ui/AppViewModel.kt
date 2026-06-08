@@ -100,8 +100,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun stopMining() {
-        graph.localMinerRuntime.stopMining()
-        MinerForegroundService.stop(getApplication())
+        if (uiState.value.settings.runInForeground) {
+            // Route through the service's ActionStop path so the service awaits runtime
+            // cancellation (stopMiningAndJoin) before removing the foreground notification,
+            // instead of a fire-and-forget stopService() that can race the watch loop.
+            getApplication<Application>().startService(
+                MinerForegroundService.stopIntent(getApplication()),
+            )
+        } else {
+            graph.localMinerRuntime.stopMining()
+        }
     }
 
     fun toggleGamePriority(gameName: String) {

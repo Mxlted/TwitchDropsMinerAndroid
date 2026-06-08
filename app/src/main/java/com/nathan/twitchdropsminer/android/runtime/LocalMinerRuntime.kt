@@ -13,6 +13,7 @@ import com.nathan.twitchdropsminer.android.data.model.RuntimeActivity
 import com.nathan.twitchdropsminer.android.data.model.RuntimePhase
 import com.nathan.twitchdropsminer.android.data.model.RuntimeSnapshot
 import com.nathan.twitchdropsminer.android.data.model.StoredTwitchSession
+import com.nathan.twitchdropsminer.android.data.twitch.CurrentDropProgress
 import com.nathan.twitchdropsminer.android.data.twitch.TwitchApi
 import java.time.Duration
 import java.time.Instant
@@ -22,6 +23,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -111,7 +113,7 @@ class LocalMinerRuntime(
                         )
                     }
 
-                    while (isActive && Instant.now().isBefore(authorization.expiresAt)) {
+                    while (currentCoroutineContext().isActive && Instant.now().isBefore(authorization.expiresAt)) {
                         delay(authorization.intervalSeconds * 1000L)
                         val token = twitchApiClient.pollDeviceToken(
                             authorization.deviceCode,
@@ -335,7 +337,7 @@ class LocalMinerRuntime(
             return
         }
 
-        while (scope.isActive && miningJob?.isActive == true) {
+        while (currentCoroutineContext().isActive) {
             var settings = settingsRepository.settings.first()
             updateSnapshot(RuntimePhase.LoadingInventory, "Loading Twitch drops inventory")
             val campaignLoad = loadCampaigns(settings, session)
@@ -383,8 +385,7 @@ class LocalMinerRuntime(
                 )
             }
             while (
-                scope.isActive &&
-                miningJob?.isActive == true &&
+                currentCoroutineContext().isActive &&
                 Instant.now().isBefore(refreshAt)
             ) {
                 val activeDrop = currentCampaign.nextEarnableDrop()
@@ -748,13 +749,17 @@ class LocalMinerRuntime(
             twitchApiClient.currentDrop(session, channel.id)
         }.getOrNull()
         if (progress != null) {
-            return campaign.updateDrop(progress.dropId) { drop ->
-                val current = progress.currentMinutes.coerceAtMost(drop.requiredMinutes)
-                drop.copy(
-                    currentMinutes = current,
-                    progress = if (drop.requiredMinutes <= 0) 0f else current.toFloat() / drop.requiredMinutes,
-                    canClaim = current >= drop.requiredMinutes && !drop.isClaimed,
-                )
+            when (val applied = campaign.applyTwitchProgress(progress)) {
+                is TwitchProgressUpdate.Updated -> return applied.campaign
+                is TwitchProgressUpdate.UnexpectedDrop -> {
+                    appendActivity(
+                        RuntimePhase.Watching,
+                        "Ignoring progress for unexpected drop",
+                        "Twitch reported drop ${progress.dropId} (${progress.currentMinutes}m) on " +
+                            "${channel.name}, which is not part of ${campaign.gameName} (${campaign.id}).",
+                    )
+                    return campaign
+                }
             }
         }
         if (!fallbackBump) {
@@ -916,15 +921,43 @@ private fun Campaign.watchingTask(
         else -> "Watching ${channel.name}"
     }
 
-private fun Campaign.shouldUseLocalProgressBump(
+internal fun Campaign.shouldUseLocalProgressBump(
     settings: AppSettings,
     watchSucceeded: Boolean,
 ): Boolean =
     when {
+        // Real (non-sample) unlinked campaigns never get synthetic progress bumps; their
+        // progress must come from Twitch so the unlinked probe can decide whether to keep going.
         canTryUnlinkedLocally && !isSampleCampaign -> false
         isSampleCampaign -> settings.useSampleDataFallback
         else -> watchSucceeded
     }
+
+internal sealed class TwitchProgressUpdate {
+    data class Updated(val campaign: Campaign) : TwitchProgressUpdate()
+    object UnexpectedDrop : TwitchProgressUpdate()
+}
+
+/**
+ * Applies Twitch-reported progress to the matching drop. If Twitch reports progress for a drop
+ * that is not part of this campaign, this is a safe no-op signalled by [TwitchProgressUpdate.UnexpectedDrop]
+ * so the caller can log enough detail to diagnose the mismatch.
+ */
+internal fun Campaign.applyTwitchProgress(progress: CurrentDropProgress): TwitchProgressUpdate {
+    if (drops.none { it.id == progress.dropId }) {
+        return TwitchProgressUpdate.UnexpectedDrop
+    }
+    return TwitchProgressUpdate.Updated(
+        updateDrop(progress.dropId) { drop ->
+            val current = progress.currentMinutes.coerceAtMost(drop.requiredMinutes)
+            drop.copy(
+                currentMinutes = current,
+                progress = if (drop.requiredMinutes <= 0) 0f else current.toFloat() / drop.requiredMinutes,
+                canClaim = current >= drop.requiredMinutes && !drop.isClaimed,
+            )
+        },
+    )
+}
 
 internal data class UnlinkedProgressProbe(
     val campaignId: String,

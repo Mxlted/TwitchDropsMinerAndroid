@@ -1,6 +1,5 @@
 package com.nathan.twitchdropsminer.android.ui.screens
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -35,6 +34,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nathan.twitchdropsminer.android.data.model.AppSettings
@@ -45,6 +45,7 @@ import com.nathan.twitchdropsminer.android.ui.theme.AppAccent
 import com.nathan.twitchdropsminer.android.ui.theme.AppMuted
 import com.nathan.twitchdropsminer.android.ui.theme.AppSurfaceHigh
 import com.nathan.twitchdropsminer.android.ui.theme.AppWarning
+import kotlin.math.roundToInt
 
 @Composable
 fun DropsScreen(
@@ -53,6 +54,7 @@ fun DropsScreen(
     onToggleGamePriority: (String) -> Unit,
     onSetGamePriority: (String, Int) -> Unit,
     onClearPriority: () -> Unit,
+    onSetCampaignExclusion: (Set<String>, Boolean) -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
     var compactView by rememberSaveable { mutableStateOf(false) }
@@ -70,8 +72,32 @@ fun DropsScreen(
     val availableCampaigns = remember(snapshot.campaigns) {
         snapshot.campaigns.filter { !it.expired && it.totalDrops > 0 }
     }
-    val allGameSummaries = remember(availableCampaigns, settings.selectedGamePriority) {
+    val excludedCampaigns = remember(snapshot.campaigns, settings.excludedCampaignIds) {
+        snapshot.campaigns.filter { settings.isCampaignExcluded(it) && it.totalDrops > 0 }
+    }
+    val unloadedExcludedIds = remember(settings.excludedCampaignIds, excludedCampaigns) {
+        val loadedExcludedIdKeys = excludedCampaigns
+            .map { it.id.trim().lowercase() }
+            .filter { it.isNotBlank() }
+            .toSet()
+        settings.excludedCampaignIds
+            .map { it.trim() }
+            .filter { it.isNotBlank() && it.lowercase() !in loadedExcludedIdKeys }
+            .sortedWith(String.CASE_INSENSITIVE_ORDER)
+    }
+    val allGameSummaries = remember(
+        availableCampaigns,
+        settings.selectedGamePriority,
+        settings.excludedCampaignIds,
+    ) {
         availableCampaigns.toGameCampaignSummaries(settings)
+    }
+    val excludedSummaries = remember(
+        excludedCampaigns,
+        settings.selectedGamePriority,
+        settings.excludedCampaignIds,
+    ) {
+        excludedCampaigns.toGameCampaignSummaries(settings)
     }
     val allSummaryByName = remember(allGameSummaries) {
         allGameSummaries.associateBy { it.gameName.lowercase() }
@@ -84,6 +110,7 @@ fun DropsScreen(
                     gameName = gameName,
                     campaigns = emptyList(),
                     priorityIndex = index,
+                    excludedCampaignIds = emptySet(),
                 )
         }
     }
@@ -117,7 +144,7 @@ fun DropsScreen(
                     onValueChange = { query = it },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    label = { Text("Filter available games") },
+                    label = { Text("Search games or campaigns") },
                 )
             }
             item {
@@ -131,11 +158,14 @@ fun DropsScreen(
         when (currentView) {
             CampaignsView.Prioritized -> {
                 item {
-                    SectionTitle("Prioritized", "Miner tries these games first, in order.")
+                    SectionTitle("Priority Order", "Miner tries these games first, in order.")
                 }
                 if (prioritizedSummaries.isEmpty()) {
                     item {
-                        EmptyState("No prioritized games yet. Auto Mode will choose eligible campaigns.")
+                        EmptyState(
+                            text = "No prioritized games yet.",
+                            detail = "Auto Mode will choose eligible campaigns unless you prioritize a game.",
+                        )
                     }
                 } else {
                     items(
@@ -149,6 +179,7 @@ fun DropsScreen(
                             mode = GameCardMode.EditPriorityOnTap,
                             onToggleGamePriority = onToggleGamePriority,
                             onSetGamePriority = onSetGamePriority,
+                            onSetCampaignExclusion = onSetCampaignExclusion,
                         )
                     }
                 }
@@ -156,12 +187,15 @@ fun DropsScreen(
 
             CampaignsView.AllAvailable -> {
                 item {
-                    SectionTitle("Games", "Available Drops campaigns.")
+                    SectionTitle("Available Campaigns", "Linked, unlinked, claimable, and active game groups.")
                 }
                 when {
                     availableCampaigns.isEmpty() -> {
                         item {
-                            EmptyState("No games with available Drops campaigns loaded.")
+                            EmptyState(
+                                text = "No available Drops campaigns loaded.",
+                                detail = "Refresh inventory from the Dashboard after signing in.",
+                            )
                         }
                     }
 
@@ -183,8 +217,69 @@ fun DropsScreen(
                                 mode = GameCardMode.AddPriorityButton,
                                 onToggleGamePriority = onToggleGamePriority,
                                 onSetGamePriority = onSetGamePriority,
+                                onSetCampaignExclusion = onSetCampaignExclusion,
                             )
                         }
+                    }
+                }
+            }
+
+            CampaignsView.Excluded -> {
+                item {
+                    SectionTitle(
+                        "Excluded Campaigns",
+                        "Skipped by priority, Auto Mode, and unlinked probing until restored.",
+                    )
+                }
+                if (settings.excludedCampaignIds.isNotEmpty()) {
+                    item {
+                        OutlinedButton(
+                            onClick = { onSetCampaignExclusion(settings.excludedCampaignIds, false) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Clear All Excluded")
+                        }
+                    }
+                }
+                if (excludedSummaries.isEmpty() && unloadedExcludedIds.isEmpty()) {
+                    item {
+                        EmptyState(
+                            text = "No excluded campaigns.",
+                            detail = "Excluded campaigns stay visible here so they can be restored later.",
+                        )
+                    }
+                }
+                if (excludedSummaries.isNotEmpty()) {
+                    items(
+                        items = excludedSummaries,
+                        key = { "excluded-${it.gameName}" },
+                    ) { summary ->
+                        GameCampaignCard(
+                            summary = summary,
+                            selectedCount = settings.selectedGamePriority.size,
+                            density = density,
+                            mode = GameCardMode.Excluded,
+                            onToggleGamePriority = onToggleGamePriority,
+                            onSetGamePriority = onSetGamePriority,
+                            onSetCampaignExclusion = onSetCampaignExclusion,
+                        )
+                    }
+                }
+                if (unloadedExcludedIds.isNotEmpty()) {
+                    item {
+                        SectionTitle(
+                            "Excluded IDs Not Currently Loaded",
+                            "These persisted exclusions are kept so they can be restored.",
+                        )
+                    }
+                    items(
+                        items = unloadedExcludedIds,
+                        key = { "excluded-id-$it" },
+                    ) { campaignId ->
+                        ExcludedCampaignIdRow(
+                            campaignId = campaignId,
+                            onSetCampaignExclusion = onSetCampaignExclusion,
+                        )
                     }
                 }
             }
@@ -199,37 +294,29 @@ private fun CampaignsHeader(
     onCompactViewChanged: (Boolean) -> Unit,
     onClearPriority: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = "Campaigns",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                text = "Priority: ${settings.gamePriorityLabel}",
-                style = MaterialTheme.typography.bodySmall,
-                color = AppMuted,
-            )
-        }
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        ScreenHeader(
+            title = "Campaigns",
+            subtitle = "Priority: ${settings.gamePriorityLabel} - " +
+                "Excluded: ${settings.excludedCampaignIds.size}",
+        )
         Row(
+            modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             OutlinedButton(
                 onClick = { onCompactViewChanged(!compactView) },
+                modifier = Modifier.weight(1f),
             ) {
                 Text(if (compactView) "Regular" else "Compact")
             }
             OutlinedButton(
                 onClick = onClearPriority,
                 enabled = settings.hasGamePriority,
+                modifier = Modifier.weight(1f),
             ) {
-                Text("Auto")
+                Text("Use Auto Mode")
             }
         }
     }
@@ -244,36 +331,35 @@ private fun CampaignsViewToggle(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        if (currentView == CampaignsView.Prioritized) {
-            Button(
-                onClick = { onViewChanged(CampaignsView.Prioritized) },
-                modifier = Modifier.weight(1f),
-            ) {
-                Text("Prioritized")
-            }
-        } else {
-            OutlinedButton(
-                onClick = { onViewChanged(CampaignsView.Prioritized) },
-                modifier = Modifier.weight(1f),
-            ) {
-                Text("Prioritized")
-            }
+        CampaignsView.entries.forEach { view ->
+            CampaignsViewButton(
+                view = view,
+                currentView = currentView,
+                onViewChanged = onViewChanged,
+            )
         }
+    }
+}
 
-        if (currentView == CampaignsView.AllAvailable) {
-            Button(
-                onClick = { onViewChanged(CampaignsView.AllAvailable) },
-                modifier = Modifier.weight(1f),
-            ) {
-                Text("Games")
-            }
-        } else {
-            OutlinedButton(
-                onClick = { onViewChanged(CampaignsView.AllAvailable) },
-                modifier = Modifier.weight(1f),
-            ) {
-                Text("Games")
-            }
+@Composable
+private fun RowScope.CampaignsViewButton(
+    view: CampaignsView,
+    currentView: CampaignsView,
+    onViewChanged: (CampaignsView) -> Unit,
+) {
+    if (view == currentView) {
+        Button(
+            onClick = { onViewChanged(view) },
+            modifier = Modifier.weight(1f),
+        ) {
+            Text(view.label)
+        }
+    } else {
+        OutlinedButton(
+            onClick = { onViewChanged(view) },
+            modifier = Modifier.weight(1f),
+        ) {
+            Text(view.label)
         }
     }
 }
@@ -336,6 +422,7 @@ private fun GameCampaignCard(
     mode: GameCardMode,
     onToggleGamePriority: (String) -> Unit,
     onSetGamePriority: (String, Int) -> Unit,
+    onSetCampaignExclusion: (Set<String>, Boolean) -> Unit,
 ) {
     val priorityIndex = summary.priorityIndex
     val compact = density == CampaignCardDensity.Compact
@@ -359,13 +446,7 @@ private fun GameCampaignCard(
     }
 
     Card(
-        modifier = if (editsPriorityOnTap) {
-            Modifier
-                .fillMaxWidth()
-                .clickable { showPriorityDialog = true }
-        } else {
-            Modifier.fillMaxWidth()
-        },
+        modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = AppSurfaceHigh),
         shape = RoundedCornerShape(8.dp),
     ) {
@@ -375,6 +456,24 @@ private fun GameCampaignCard(
         ) {
             GameCampaignCardHeader(summary = summary, compact = compact)
 
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "Progress",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = AppMuted,
+                )
+                Text(
+                    text = summary.progressLine,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (summary.claimableDrops > 0) AppAccent else AppMuted,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.End,
+                )
+            }
             LinearProgressIndicator(
                 progress = { summary.progress.coerceIn(0f, 1f) },
                 modifier = Modifier.fillMaxWidth(),
@@ -399,14 +498,58 @@ private fun GameCampaignCard(
                     text = summary.eligibilityLabel,
                     style = MaterialTheme.typography.bodySmall,
                     color = summary.eligibilityColor(),
+                    fontWeight = FontWeight.SemiBold,
                 )
             }
 
-            if (mode == GameCardMode.AddPriorityButton) {
-                GamesPriorityButton(
-                    prioritized = priorityIndex != null,
-                    onAddPriority = { onToggleGamePriority(summary.gameName) },
-                )
+            when (mode) {
+                GameCardMode.AddPriorityButton -> {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        GamesPriorityButton(
+                            prioritized = priorityIndex != null,
+                            modifier = Modifier.weight(1f),
+                            onAddPriority = { onToggleGamePriority(summary.gameName) },
+                        )
+                        CampaignExclusionButton(
+                            summary = summary,
+                            restoreOnly = false,
+                            modifier = Modifier.weight(1f),
+                            onSetCampaignExclusion = onSetCampaignExclusion,
+                        )
+                    }
+                }
+
+                GameCardMode.EditPriorityOnTap -> {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        OutlinedButton(
+                            onClick = { showPriorityDialog = true },
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text("Edit Priority")
+                        }
+                        CampaignExclusionButton(
+                            summary = summary,
+                            restoreOnly = false,
+                            modifier = Modifier.weight(1f),
+                            onSetCampaignExclusion = onSetCampaignExclusion,
+                        )
+                    }
+                }
+
+                GameCardMode.Excluded -> {
+                    CampaignExclusionButton(
+                        summary = summary,
+                        restoreOnly = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        onSetCampaignExclusion = onSetCampaignExclusion,
+                    )
+                }
             }
         }
     }
@@ -430,6 +573,7 @@ private fun GameCampaignCardHeader(
         ) {
             Text(
                 text = summary.gameName,
+                style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = if (compact) 1 else 2,
                 overflow = TextOverflow.Ellipsis,
@@ -448,6 +592,9 @@ private fun GameCampaignCardHeader(
             horizontalAlignment = Alignment.End,
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
+            summary.exclusionStatusLabel?.let {
+                StatusPill(it, color = AppWarning.copy(alpha = 0.22f))
+            }
             StatusPill(summary.priorityStatusLabel)
             StatusPill(summary.linkStatusLabel, color = summary.linkStatusColor())
         }
@@ -457,22 +604,105 @@ private fun GameCampaignCardHeader(
 @Composable
 private fun GamesPriorityButton(
     prioritized: Boolean,
+    modifier: Modifier = Modifier,
     onAddPriority: () -> Unit,
 ) {
     if (prioritized) {
         OutlinedButton(
             onClick = {},
             enabled = false,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = modifier.fillMaxWidth(),
         ) {
-            Text("Already Prioritized")
+            Text("Prioritized")
         }
     } else {
         Button(
             onClick = onAddPriority,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = modifier.fillMaxWidth(),
         ) {
-            Text("Add to Prioritized")
+            Text("Prioritize")
+        }
+    }
+}
+
+@Composable
+private fun CampaignExclusionButton(
+    summary: GameCampaignSummary,
+    restoreOnly: Boolean,
+    modifier: Modifier = Modifier,
+    onSetCampaignExclusion: (Set<String>, Boolean) -> Unit,
+) {
+    val targetIds = if (restoreOnly || summary.allCampaignsExcluded) {
+        summary.excludedCampaignIds
+    } else {
+        summary.campaignIds
+    }
+    if (targetIds.isEmpty()) {
+        return
+    }
+
+    val restoring = restoreOnly || summary.allCampaignsExcluded
+    val label = when {
+        restoring -> "Restore"
+        summary.partiallyExcluded -> "Exclude All"
+        else -> "Exclude"
+    }
+    val onClick = { onSetCampaignExclusion(targetIds, !restoring) }
+
+    if (restoring) {
+        Button(
+            onClick = onClick,
+            modifier = modifier.fillMaxWidth(),
+        ) {
+            Text(label)
+        }
+    } else {
+        OutlinedButton(
+            onClick = onClick,
+            modifier = modifier.fillMaxWidth(),
+        ) {
+            Text(label)
+        }
+    }
+}
+
+@Composable
+private fun ExcludedCampaignIdRow(
+    campaignId: String,
+    onSetCampaignExclusion: (Set<String>, Boolean) -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = AppSurfaceHigh),
+        shape = RoundedCornerShape(8.dp),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = "Campaign ID",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = AppMuted,
+                )
+                Text(
+                    text = campaignId,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            OutlinedButton(onClick = { onSetCampaignExclusion(setOf(campaignId), false) }) {
+                Text("Unexclude")
+            }
         }
     }
 }
@@ -557,11 +787,13 @@ private enum class CampaignCardDensity {
 private enum class GameCardMode {
     EditPriorityOnTap,
     AddPriorityButton,
+    Excluded,
 }
 
-private enum class CampaignsView {
-    Prioritized,
-    AllAvailable,
+private enum class CampaignsView(val label: String) {
+    Prioritized("Priority"),
+    AllAvailable("Available"),
+    Excluded("Excluded"),
 }
 
 private enum class GamesLinkFilter(val label: String) {
@@ -580,9 +812,14 @@ private data class GameCampaignSummary(
     val gameName: String,
     val campaigns: List<Campaign>,
     val priorityIndex: Int?,
+    val excludedCampaignIds: Set<String>,
 ) {
     private val drops: List<CampaignDrop> = campaigns.flatMap { it.drops }
+    val campaignIds: Set<String> = campaigns.map { it.id }.toSet()
     val campaignCount: Int = campaigns.size
+    val excludedCampaignCount: Int = campaigns.count { it.id in excludedCampaignIds }
+    val allCampaignsExcluded: Boolean = campaignCount > 0 && excludedCampaignCount == campaignCount
+    val partiallyExcluded: Boolean = excludedCampaignCount > 0 && !allCampaignsExcluded
     val activeCampaigns: Int = campaigns.count { it.active }
     val linkedCampaigns: Int = campaigns.count { it.linked }
     val earnableCampaigns: Int = campaigns.count { it.canEarnLocally }
@@ -616,21 +853,40 @@ private data class GameCampaignSummary(
         }
     }
     val priorityStatusLabel: String =
-        priorityIndex?.let { "Priority ${it + 1}" } ?: "Available"
+        priorityIndex?.let { "Priority ${it + 1}" } ?: "Auto candidate"
+    val exclusionStatusLabel: String? = when {
+        allCampaignsExcluded -> "Excluded"
+        partiallyExcluded -> "Partly Excluded"
+        else -> null
+    }
     val linkStatusLabel: String = linkState.label
+    val progressPercent: Int = (progress.coerceIn(0f, 1f) * 100f).roundToInt()
+    val claimStatusLabel: String = when {
+        totalDrops <= 0 -> "No drops"
+        claimableDrops > 0 -> "$claimableDrops ready to claim"
+        claimedDrops >= totalDrops -> "All claimed"
+        else -> "$claimedDrops/$totalDrops claimed"
+    }
+    val progressLine: String = "$progressPercent% - $claimStatusLabel"
     val regularStatusLine: String = when {
         campaigns.isEmpty() -> "No available campaign details loaded."
-        else -> "${linkState.label}, $activeCampaigns/$campaignCount active campaigns, " +
-            "$claimedDrops/$totalDrops drops claimed, ${remainingMinutes}m remaining"
+        allCampaignsExcluded -> "Excluded from priority, Auto Mode, and unlinked probing."
+        partiallyExcluded -> "$excludedCampaignCount/$campaignCount campaigns excluded from mining."
+        else -> "$activeCampaigns/$campaignCount active - $linkedCampaigns linked - " +
+            "${remainingMinutes}m remaining"
     }
     val compactStatusLine: String = when {
         campaigns.isEmpty() -> "No loaded campaign details"
+        allCampaignsExcluded -> "Excluded - $claimStatusLabel"
+        partiallyExcluded -> "$excludedCampaignCount excluded - $claimStatusLabel"
         claimableDrops > 0 -> "${linkState.label}, $claimableDrops ready, drops $claimedDrops/$totalDrops"
         else -> "${linkState.label}, $activeCampaigns/$campaignCount active, drops $claimedDrops/$totalDrops, " +
             "${remainingMinutes}m left"
     }
     val eligibilityLabel: String = when {
         campaigns.isEmpty() -> "No available campaign details loaded"
+        allCampaignsExcluded -> "Excluded from mining until restored"
+        partiallyExcluded -> "$excludedCampaignCount ${if (excludedCampaignCount == 1) "campaign" else "campaigns"} excluded from mining"
         claimableDrops > 0 -> "$claimableDrops drops ready to claim"
         earnableCampaigns > 0 -> "Eligible linked campaign available"
         linkState == GameAccountLinkState.Unlinked -> "Link account before this game can earn drops"
@@ -642,6 +898,7 @@ private data class GameCampaignSummary(
 }
 
 private fun GameCampaignSummary.eligibilityColor() = when {
+    allCampaignsExcluded || partiallyExcluded -> AppWarning
     claimableDrops > 0 || earnableCampaigns > 0 -> AppAccent
     linkState == GameAccountLinkState.Unlinked -> AppWarning
     else -> AppMuted
@@ -688,6 +945,10 @@ private fun List<Campaign>.toGameCampaignSummaries(settings: AppSettings): List<
                     .thenBy { it.endsAt },
             ),
             priorityIndex = settings.gamePriorityIndex(gameName),
+            excludedCampaignIds = campaigns
+                .filter { settings.isCampaignExcluded(it) }
+                .map { it.id }
+                .toSet(),
         )
     }.sortedWith(
         compareByDescending<GameCampaignSummary> { it.claimableDrops > 0 }

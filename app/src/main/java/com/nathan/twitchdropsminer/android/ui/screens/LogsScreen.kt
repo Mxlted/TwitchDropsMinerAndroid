@@ -8,19 +8,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.nathan.twitchdropsminer.android.data.model.LocalLogEntry
 import com.nathan.twitchdropsminer.android.data.model.RuntimeSnapshot
-import com.nathan.twitchdropsminer.android.ui.theme.AppMuted
 
 @Composable
 fun LogsScreen(
@@ -51,17 +47,16 @@ fun LogsScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text(
-            text = "Logs",
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold,
+        ScreenHeader(
+            title = "Logs",
+            subtitle = "Local app logs plus runtime activity snapshot",
         )
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
             Button(
                 onClick = { clipboard.setText(AnnotatedString(visibleText)) },
                 modifier = Modifier.weight(1f),
             ) {
-                Text("Copy")
+                Text("Copy All")
             }
             OutlinedButton(onClick = onClearLogs, modifier = Modifier.weight(1f)) {
                 Text("Clear")
@@ -78,32 +73,32 @@ fun LogsScreen(
                 SectionTitle("Local Runtime", "${localLogs.size} lines")
             }
             if (visibleLogs.isEmpty()) {
-                item { EmptyState("No local Android logs yet.") }
+                item {
+                    EmptyState(
+                        text = "No local Android logs yet.",
+                        detail = "Runtime messages will appear here as the app works.",
+                    )
+                }
             } else {
                 items(visibleLogs) { entry ->
-                    LogLine(entry.toLine())
+                    LocalLogLine(entry)
                 }
             }
             item {
                 SectionTitle("Activity Snapshot", "${snapshot.activity.size} events")
             }
             if (visibleActivity.isEmpty()) {
-                item { EmptyState("No runtime activity yet.") }
+                item {
+                    EmptyState(
+                        text = "No runtime activity yet.",
+                        detail = "Activity appears after login, inventory refresh, or mining.",
+                    )
+                }
             } else {
                 items(visibleActivity) { entry ->
-                    LogLine(entry.toLine())
+                    RuntimeActivityLine(entry)
                 }
             }
         }
     }
-}
-
-@Composable
-private fun LogLine(line: String) {
-    Text(
-        text = line,
-        style = MaterialTheme.typography.bodySmall,
-        fontFamily = FontFamily.Monospace,
-        color = AppMuted,
-    )
 }

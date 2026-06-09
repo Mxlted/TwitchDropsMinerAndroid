@@ -62,6 +62,7 @@ class MainActivity : ComponentActivity() {
                 onToggleGamePriority = viewModel::toggleGamePriority,
                 onSetGamePriority = viewModel::setGamePriority,
                 onClearGamePriority = viewModel::clearGamePriority,
+                onSetCampaignExclusion = viewModel::setCampaignExclusion,
                 onClearLogs = viewModel::clearLogs,
                 onRunInForegroundChanged = viewModel::setRunInForeground,
                 onWatchIntervalChanged = viewModel::setWatchInterval,

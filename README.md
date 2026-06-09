@@ -95,6 +95,8 @@ When priority games are selected, the app follows that order. If no games are pr
 
 Settings allow fallback behavior when priority games are complete or when they do not have an eligible live channel.
 
+Campaigns can be marked **Exclude** from the Campaigns screen. Excluded campaigns stay visible in the Excluded view so they can be restored, but they are skipped by priority selection, Auto Mode, priority fallback, and unlinked-game probing.
+
 The **Allow watching unlinked games** setting is off by default. When enabled, the miner tries prioritized games first, then linked eligible games, then unlinked games. Unlinked watching is treated as speculative: the app checks real Twitch progress after a short window and moves to the next unlinked game if progress does not increase.
 
 ## Keep Active Screen

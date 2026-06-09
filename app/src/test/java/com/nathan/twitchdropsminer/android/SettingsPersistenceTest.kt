@@ -1,6 +1,8 @@
 package com.nathan.twitchdropsminer.android
 
 import androidx.datastore.preferences.core.preferencesOf
+import com.nathan.twitchdropsminer.android.data.local.CampaignExclusionIds
+import com.nathan.twitchdropsminer.android.data.model.AppSettings
 import com.nathan.twitchdropsminer.android.data.local.GamePriorityCleanup
 import com.nathan.twitchdropsminer.android.data.local.GamePriorityOrder
 import com.nathan.twitchdropsminer.android.data.local.SettingsPreferencesMapper
@@ -20,6 +22,7 @@ class SettingsPersistenceTest {
             SettingsPreferencesMapper.FallbackToAutoWhenNoPrioritizedChannel to true,
             SettingsPreferencesMapper.AllowWatchingUnlinkedGames to true,
             SettingsPreferencesMapper.KeepActiveScreenMode to true,
+            SettingsPreferencesMapper.ExcludedCampaignIds to setOf(" campaign-2 ", ""),
             SettingsPreferencesMapper.SelectedCampaignIds to setOf("campaign-1"),
             SettingsPreferencesMapper.SelectedGamePriority to """["Game B","Game A"]""",
         )
@@ -34,9 +37,42 @@ class SettingsPersistenceTest {
         assertTrue(settings.keepActiveScreenMode)
         assertEquals(20, settings.watchIntervalSeconds)
         assertEquals(15, settings.inventoryRefreshMinutes)
+        assertEquals(setOf("campaign-2"), settings.excludedCampaignIds)
         assertEquals(setOf("campaign-1"), settings.selectedCampaignIds)
         assertEquals(listOf("Game B", "Game A"), settings.selectedGamePriority)
         assertEquals(setOf("Game B", "Game A"), settings.selectedGames)
+    }
+
+    @Test
+    fun normalizesExcludedCampaignIds() {
+        val settings = AppSettings(
+            excludedCampaignIds = setOf(" campaign-1 ", "CAMPAIGN-1", ""),
+        ).normalized()
+
+        assertEquals(setOf("campaign-1"), settings.excludedCampaignIds)
+    }
+
+    @Test
+    fun campaignExclusionIdsAddRemoveAndClearCaseInsensitively() {
+        val added = CampaignExclusionIds.update(
+            current = setOf("existing-campaign"),
+            campaignIds = listOf(" Campaign-1 ", "CAMPAIGN-1", ""),
+            excluded = true,
+        )
+
+        assertEquals(setOf("existing-campaign", "Campaign-1"), added)
+
+        val removed = CampaignExclusionIds.update(
+            current = added,
+            campaignIds = listOf("campaign-1"),
+            excluded = false,
+        )
+
+        assertEquals(setOf("existing-campaign"), removed)
+        assertEquals(
+            emptySet<String>(),
+            CampaignExclusionIds.update(removed, removed, excluded = false),
+        )
     }
 
     @Test

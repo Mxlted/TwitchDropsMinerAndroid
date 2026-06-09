@@ -60,6 +60,7 @@ class LocalMinerRuntime(
     private var dropsClaimedThisSession = 0
     private val dropClaimHandler = DropClaimHandler(twitchApiClient)
     private val unlinkedNoProgressSkips = mutableMapOf<String, Instant>()
+    private var lastLoggedExcludedCampaignIds: Set<String> = emptySet()
 
     val snapshot: StateFlow<RuntimeSnapshot> = _snapshot
 
@@ -172,6 +173,7 @@ class LocalMinerRuntime(
         }
         dropClaimHandler.clearAttempts()
         unlinkedNoProgressSkips.clear()
+        lastLoggedExcludedCampaignIds = emptySet()
         miningJob = scope.launch {
             appendActivity(RuntimePhase.LoadingInventory, "Local miner started")
             try {
@@ -388,6 +390,28 @@ class LocalMinerRuntime(
                 currentCoroutineContext().isActive &&
                 Instant.now().isBefore(refreshAt)
             ) {
+                val latestSettings = settingsRepository.settings.first()
+                if (ActiveWatchGuard.shouldStopForExcludedCampaign(latestSettings, currentCampaign)) {
+                    settings = latestSettings
+                    updateSnapshot(RuntimePhase.Idle, "Campaign excluded; stopping current watch") {
+                        it.copy(
+                            campaigns = markSelected(campaignSnapshot, settings),
+                            channels = channels.map { channel -> channel.copy(watching = false) },
+                            currentChannel = null,
+                            activeCampaign = null,
+                            activeDrop = null,
+                            progressSummary = campaignSnapshot.progressSummary(),
+                            error = null,
+                        )
+                    }
+                    appendActivity(
+                        RuntimePhase.Idle,
+                        "Campaign excluded while active",
+                        "${currentCampaign.gameName}; stopping current watch and reselecting.",
+                    )
+                    break
+                }
+
                 val activeDrop = currentCampaign.nextEarnableDrop()
                 if (activeDrop == null) {
                     appendActivity(RuntimePhase.Idle, "Campaign completed", currentCampaign.name)
@@ -526,15 +550,24 @@ class LocalMinerRuntime(
         campaignSnapshot: List<Campaign>,
     ): CampaignWorkSelection {
         pruneExpiredUnlinkedSkips(Instant.now())
-        val selectableCampaigns = campaignSnapshot.withoutSkippedUnlinkedCampaigns(
+        val unskippedCampaigns = campaignSnapshot.withoutSkippedUnlinkedCampaigns(
             unlinkedNoProgressSkips.keys,
         )
-        val decision = CampaignPrioritySelector.initialDecision(settings, selectableCampaigns)
+        val excludedCampaigns = unskippedCampaigns.filter { settings.isCampaignExcluded(it) }
+        val excludedCampaignIds = excludedCampaigns.normalizedCampaignIds()
+        if (excludedCampaignIds.isNotEmpty() && excludedCampaignIds != lastLoggedExcludedCampaignIds) {
+            appendExcludedCampaignSkips(excludedCampaigns)
+            lastLoggedExcludedCampaignIds = excludedCampaignIds
+        } else if (excludedCampaignIds.isEmpty()) {
+            lastLoggedExcludedCampaignIds = emptySet()
+        }
+        val selectableCampaigns = unskippedCampaigns.withoutExcludedCampaigns(settings)
+        val decision = CampaignPrioritySelector.initialDecision(settings, unskippedCampaigns)
         return selectFromCandidateDecision(
             settings = settings,
             session = session,
             campaignSnapshot = campaignSnapshot,
-            selectionCampaigns = selectableCampaigns,
+            selectionCampaigns = unskippedCampaigns,
             decision = decision,
         )
     }
@@ -546,6 +579,20 @@ class LocalMinerRuntime(
             }
             .keys
         expiredCampaignIds.forEach(unlinkedNoProgressSkips::remove)
+    }
+
+    private suspend fun appendExcludedCampaignSkips(campaigns: List<Campaign>) {
+        val skipped = campaigns.distinctBy { it.id }
+        val title = if (skipped.size == 1) {
+            "Skipped excluded campaign"
+        } else {
+            "Skipped excluded campaigns"
+        }
+        appendActivity(
+            RuntimePhase.SelectingCampaign,
+            title,
+            skipped.selectionLabel(limit = 4),
+        )
     }
 
     private suspend fun selectFromCandidateDecision(
@@ -1020,6 +1067,11 @@ internal sealed class UnlinkedProgressProbeResult {
     ) : UnlinkedProgressProbeResult()
 }
 
+internal object ActiveWatchGuard {
+    fun shouldStopForExcludedCampaign(settings: AppSettings, campaign: Campaign): Boolean =
+        settings.isCampaignExcluded(campaign)
+}
+
 internal object CampaignPrioritySelector {
     fun select(settings: AppSettings, campaigns: List<Campaign>): Campaign? {
         return candidates(settings, campaigns).firstOrNull()
@@ -1033,8 +1085,9 @@ internal object CampaignPrioritySelector {
     }
 
     fun initialDecision(settings: AppSettings, campaigns: List<Campaign>): CampaignCandidateDecision {
+        val selectableCampaigns = campaigns.withoutExcludedCampaigns(settings)
         if (!settings.hasGamePriority) {
-            val autoCandidates = autoCandidates(campaigns)
+            val autoCandidates = autoCandidates(settings, selectableCampaigns)
             if (autoCandidates.isNotEmpty()) {
                 return CampaignCandidateDecision.Try(
                     mode = CampaignSelectionMode.Auto,
@@ -1045,7 +1098,7 @@ internal object CampaignPrioritySelector {
             }
             return unlinkedDecision(
                 settings = settings,
-                campaigns = campaigns,
+                campaigns = selectableCampaigns,
                 task = "Trying unlinked games",
                 detail = "Auto Mode found no linked active campaign with remaining or claimable drops.",
             ) ?: CampaignCandidateDecision.Idle(
@@ -1054,7 +1107,7 @@ internal object CampaignPrioritySelector {
             )
         }
 
-        val priorityCandidates = prioritizedCandidates(settings, campaigns)
+        val priorityCandidates = prioritizedCandidates(settings, selectableCampaigns)
         if (priorityCandidates.isNotEmpty()) {
             return CampaignCandidateDecision.Try(
                 mode = CampaignSelectionMode.Prioritized,
@@ -1066,14 +1119,14 @@ internal object CampaignPrioritySelector {
 
         prioritizedUnlinkedDecision(
             settings = settings,
-            campaigns = campaigns,
+            campaigns = selectableCampaigns,
             task = "Trying prioritized unlinked games",
             detail = "No prioritized linked campaign has remaining work; checking prioritized unlinked games.",
         )?.let { return it }
 
-        if (prioritizedGamesComplete(settings, campaigns)) {
+        if (prioritizedGamesComplete(settings, selectableCampaigns)) {
             if (settings.fallbackToAutoWhenPrioritizedComplete) {
-                val autoCandidates = autoFallbackCandidates(settings, campaigns)
+                val autoCandidates = autoFallbackCandidates(settings, selectableCampaigns)
                 if (autoCandidates.isNotEmpty()) {
                     return CampaignCandidateDecision.Try(
                         mode = CampaignSelectionMode.AutoFallbackPrioritiesComplete,
@@ -1084,7 +1137,7 @@ internal object CampaignPrioritySelector {
                 }
                 return unlinkedDecision(
                     settings = settings,
-                    campaigns = campaigns,
+                    campaigns = selectableCampaigns,
                     task = "Prioritized games complete; trying unlinked games",
                     detail = "Auto Mode fallback found no other linked eligible campaign.",
                 ) ?: CampaignCandidateDecision.Idle(
@@ -1101,6 +1154,36 @@ internal object CampaignPrioritySelector {
             )
         }
 
+        if (prioritizedGamesCompleteOrExcluded(settings, campaigns)) {
+            if (settings.fallbackToAutoWhenPrioritizedComplete) {
+                val autoCandidates = autoFallbackCandidates(settings, selectableCampaigns)
+                if (autoCandidates.isNotEmpty()) {
+                    return CampaignCandidateDecision.Try(
+                        mode = CampaignSelectionMode.AutoFallbackPrioritiesComplete,
+                        candidates = autoCandidates,
+                        task = "Prioritized campaigns excluded; using Auto Mode",
+                        detail = "Prioritized campaigns are excluded by user choice.",
+                    )
+                }
+                return unlinkedDecision(
+                    settings = settings,
+                    campaigns = selectableCampaigns,
+                    task = "Prioritized campaigns excluded; trying unlinked games",
+                    detail = "Auto Mode fallback found no other linked eligible campaign.",
+                ) ?: CampaignCandidateDecision.Idle(
+                    task = "Prioritized campaigns are excluded",
+                    detail = "Auto Mode fallback is enabled, but no other eligible campaign is available.",
+                    activityTitle = "Priority mining idle",
+                )
+            }
+
+            return CampaignCandidateDecision.Idle(
+                task = "Prioritized campaigns are excluded",
+                detail = "Auto Mode fallback for unavailable prioritized campaigns is disabled.",
+                activityTitle = "Priority mining idle",
+            )
+        }
+
         return CampaignCandidateDecision.Idle(
             task = "No prioritized game can be mined",
             detail = "Prioritized games have no linked active campaign with remaining or claimable drops.",
@@ -1111,13 +1194,14 @@ internal object CampaignPrioritySelector {
         settings: AppSettings,
         campaigns: List<Campaign>,
     ): CampaignCandidateDecision {
+        val selectableCampaigns = campaigns.withoutExcludedCampaigns(settings)
         if (!settings.hasGamePriority) {
             return noChannelDecision(CampaignSelectionMode.Auto)
         }
         if (!settings.fallbackToAutoWhenNoPrioritizedChannel) {
             return prioritizedUnlinkedDecision(
                 settings = settings,
-                campaigns = campaigns,
+                campaigns = selectableCampaigns,
                 task = "No prioritized live channel; trying prioritized unlinked games",
                 detail = "Auto Mode fallback is disabled; checking prioritized unlinked games only.",
             ) ?: CampaignCandidateDecision.Idle(
@@ -1128,7 +1212,7 @@ internal object CampaignPrioritySelector {
             )
         }
 
-        val autoCandidates = autoFallbackCandidates(settings, campaigns)
+        val autoCandidates = autoFallbackCandidates(settings, selectableCampaigns)
         if (autoCandidates.isNotEmpty()) {
             return CampaignCandidateDecision.Try(
                 mode = CampaignSelectionMode.AutoFallbackNoPrioritizedChannel,
@@ -1139,7 +1223,7 @@ internal object CampaignPrioritySelector {
         }
         return unlinkedDecision(
             settings = settings,
-            campaigns = campaigns,
+            campaigns = selectableCampaigns,
             task = "No prioritized live channel; trying unlinked games",
             detail = "Auto Mode fallback found no other linked eligible campaign.",
         ) ?: CampaignCandidateDecision.Idle(
@@ -1154,15 +1238,16 @@ internal object CampaignPrioritySelector {
         settings: AppSettings,
         campaigns: List<Campaign>,
         mode: CampaignSelectionMode,
-    ): CampaignCandidateDecision =
-        when (mode) {
+    ): CampaignCandidateDecision {
+        val selectableCampaigns = campaigns.withoutExcludedCampaigns(settings)
+        return when (mode) {
             CampaignSelectionMode.Prioritized ->
-                afterNoPrioritizedChannelDecision(settings, campaigns)
+                afterNoPrioritizedChannelDecision(settings, selectableCampaigns)
 
             CampaignSelectionMode.Auto ->
                 unlinkedDecision(
                     settings = settings,
-                    campaigns = campaigns,
+                    campaigns = selectableCampaigns,
                     task = "Trying unlinked games",
                     detail = "Linked Auto Mode campaigns had no eligible live channel.",
                 ) ?: noChannelDecision(mode)
@@ -1170,7 +1255,7 @@ internal object CampaignPrioritySelector {
             CampaignSelectionMode.AutoFallbackPrioritiesComplete ->
                 unlinkedDecision(
                     settings = settings,
-                    campaigns = campaigns,
+                    campaigns = selectableCampaigns,
                     task = "Auto Mode fallback trying unlinked games",
                     detail = "Prioritized games are complete, and linked fallback campaigns had no eligible live channel.",
                 ) ?: noChannelDecision(mode)
@@ -1178,13 +1263,14 @@ internal object CampaignPrioritySelector {
             CampaignSelectionMode.AutoFallbackNoPrioritizedChannel ->
                 unlinkedDecision(
                     settings = settings,
-                    campaigns = campaigns,
+                    campaigns = selectableCampaigns,
                     task = "Auto Mode fallback trying unlinked games",
                     detail = "Prioritized and linked fallback campaigns had no eligible live channel.",
                 ) ?: noChannelDecision(mode)
 
             CampaignSelectionMode.Unlinked -> noChannelDecision(mode)
         }
+    }
 
     fun noChannelDecision(mode: CampaignSelectionMode): CampaignCandidateDecision.Idle =
         when (mode) {
@@ -1225,7 +1311,9 @@ internal object CampaignPrioritySelector {
         }
 
     fun prioritizedCandidates(settings: AppSettings, campaigns: List<Campaign>): List<Campaign> {
-        val earnableCampaigns = campaigns.filter { it.canEarnLocally }
+        val earnableCampaigns = campaigns
+            .withoutExcludedCampaigns(settings)
+            .filter { it.canEarnLocally }
         return settings.selectedGamePriority.flatMap { gameName ->
             earnableCampaigns.filter { campaign ->
                 campaign.gameName.equals(gameName, ignoreCase = true)
@@ -1234,11 +1322,13 @@ internal object CampaignPrioritySelector {
     }
 
     fun autoFallbackCandidates(settings: AppSettings, campaigns: List<Campaign>): List<Campaign> =
-        autoCandidates(campaigns).filter { campaign -> !settings.isGamePrioritized(campaign.gameName) }
+        autoCandidates(settings, campaigns)
+            .filter { campaign -> !settings.isGamePrioritized(campaign.gameName) }
 
     fun unlinkedCandidates(settings: AppSettings, campaigns: List<Campaign>): List<Campaign> =
         if (settings.allowWatchingUnlinkedGames) {
             campaigns
+                .withoutExcludedCampaigns(settings)
                 .filter { it.canTryUnlinkedLocally }
                 .sortedWith(
                     compareBy<Campaign> { settings.gamePriorityIndex(it.gameName) ?: Int.MAX_VALUE }
@@ -1256,16 +1346,40 @@ internal object CampaignPrioritySelector {
         if (!settings.hasGamePriority) {
             return false
         }
+        val selectableCampaigns = campaigns.withoutExcludedCampaigns(settings)
         return settings.selectedGamePriority.all { gameName ->
-            val gameCampaigns = campaigns.filter { campaign ->
+            val gameCampaigns = selectableCampaigns.filter { campaign ->
                 campaign.gameName.equals(gameName, ignoreCase = true)
             }
             gameCampaigns.isNotEmpty() && gameCampaigns.all { it.isLocallyComplete }
         }
     }
 
-    private fun autoCandidates(campaigns: List<Campaign>): List<Campaign> =
-        campaigns.filter { it.canEarnLocally }
+    private fun prioritizedGamesCompleteOrExcluded(settings: AppSettings, campaigns: List<Campaign>): Boolean {
+        if (!settings.hasGamePriority) {
+            return false
+        }
+        val hasExcludedPrioritizedCampaign = campaigns.any { campaign ->
+            settings.isGamePrioritized(campaign.gameName) && settings.isCampaignExcluded(campaign)
+        }
+        if (!hasExcludedPrioritizedCampaign) {
+            return false
+        }
+        return settings.selectedGamePriority.all { gameName ->
+            val gameCampaigns = campaigns.filter { campaign ->
+                campaign.gameName.equals(gameName, ignoreCase = true)
+            }
+            gameCampaigns.isNotEmpty() &&
+                gameCampaigns.all { campaign ->
+                    settings.isCampaignExcluded(campaign) || campaign.isLocallyComplete
+                }
+        }
+    }
+
+    private fun autoCandidates(settings: AppSettings, campaigns: List<Campaign>): List<Campaign> =
+        campaigns
+            .withoutExcludedCampaigns(settings)
+            .filter { it.canEarnLocally }
 
     private fun unlinkedDecision(
         settings: AppSettings,
@@ -1416,6 +1530,22 @@ private fun List<Campaign>.withoutSkippedUnlinkedCampaigns(
     filterNot { campaign ->
         campaign.id in skippedCampaignIds && campaign.canTryUnlinkedLocally
     }
+
+private fun List<Campaign>.withoutExcludedCampaigns(settings: AppSettings): List<Campaign> =
+    filterNot { settings.isCampaignExcluded(it) }
+
+private fun List<Campaign>.normalizedCampaignIds(): Set<String> =
+    map { it.id.trim().lowercase() }
+        .filter { it.isNotBlank() }
+        .toSet()
+
+private fun List<Campaign>.selectionLabel(limit: Int): String {
+    val labels = take(limit).map { campaign ->
+        "${campaign.gameName}: ${campaign.name.ifBlank { "Unnamed campaign" }}"
+    }
+    val suffix = if (size > limit) ", +${size - limit} more" else ""
+    return labels.joinToString() + suffix
+}
 
 private fun List<Campaign>.availablePriorityGameNames(): Set<String> =
     filterNot { it.expired }

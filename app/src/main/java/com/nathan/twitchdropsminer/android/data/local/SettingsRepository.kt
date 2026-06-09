@@ -45,6 +45,7 @@ class SettingsRepository(
                 selectedCampaignIds = emptySet(),
                 selectedGames = emptySet(),
                 selectedGamePriority = emptyList(),
+                excludedCampaignIds = emptySet(),
                 runInForeground = true,
                 monitorInForeground = true,
             )
@@ -67,6 +68,18 @@ class SettingsRepository(
                 selectedCampaignIds = emptySet(),
                 selectedGames = emptySet(),
                 selectedGamePriority = emptyList(),
+            )
+        }
+    }
+
+    suspend fun setCampaignExclusion(campaignIds: Collection<String>, excluded: Boolean) {
+        update { settings ->
+            settings.copy(
+                excludedCampaignIds = CampaignExclusionIds.update(
+                    current = settings.excludedCampaignIds,
+                    campaignIds = campaignIds,
+                    excluded = excluded,
+                ),
             )
         }
     }
@@ -225,6 +238,34 @@ internal object GamePriorityCleanup {
     }
 }
 
+internal object CampaignExclusionIds {
+    fun update(
+        current: Set<String>,
+        campaignIds: Collection<String>,
+        excluded: Boolean,
+    ): Set<String> {
+        val normalizedCurrent = normalize(current)
+        val normalizedIds = normalize(campaignIds)
+        if (normalizedIds.isEmpty()) {
+            return normalizedCurrent
+        }
+        val targetKeys = normalizedIds.map { it.lowercase() }.toSet()
+        val retained = normalizedCurrent.filterNot { it.lowercase() in targetKeys }
+        return if (excluded) {
+            normalize(retained + normalizedIds)
+        } else {
+            retained.toSet()
+        }
+    }
+
+    fun normalize(ids: Collection<String>): Set<String> =
+        ids
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase() }
+            .toSet()
+}
+
 private fun AppSettings.withGamePriority(selected: List<String>): AppSettings =
     copy(
         selectedCampaignIds = emptySet(),
@@ -252,6 +293,7 @@ object SettingsPreferencesMapper {
         booleanPreferencesKey("fallback_to_auto_when_no_prioritized_channel")
     val AllowWatchingUnlinkedGames = booleanPreferencesKey("allow_watching_unlinked_games")
     val SampleMode = booleanPreferencesKey("sample_mode")
+    val ExcludedCampaignIds = stringSetPreferencesKey("excluded_campaign_ids")
     val SelectedCampaignIds = stringSetPreferencesKey("selected_campaign_ids")
     val SelectedGames = stringSetPreferencesKey("selected_games")
     val SelectedGamePriority = stringPreferencesKey("selected_game_priority")
@@ -282,6 +324,7 @@ object SettingsPreferencesMapper {
                 preferences[FallbackToAutoWhenNoPrioritizedChannel] ?: false,
             allowWatchingUnlinkedGames = preferences[AllowWatchingUnlinkedGames] ?: false,
             sampleMode = preferences[SampleMode] ?: false,
+            excludedCampaignIds = preferences[ExcludedCampaignIds] ?: emptySet(),
             selectedCampaignIds = preferences[SelectedCampaignIds] ?: emptySet(),
             selectedGames = preferences[SelectedGames] ?: emptySet(),
             selectedGamePriority = decodeGamePriority(preferences[SelectedGamePriority]),
@@ -306,6 +349,7 @@ object SettingsPreferencesMapper {
             settings.fallbackToAutoWhenNoPrioritizedChannel
         preferences[AllowWatchingUnlinkedGames] = settings.allowWatchingUnlinkedGames
         preferences[SampleMode] = settings.sampleMode
+        preferences[ExcludedCampaignIds] = settings.excludedCampaignIds
         preferences[SelectedCampaignIds] = settings.selectedCampaignIds
         preferences[SelectedGames] = settings.selectedGames
         preferences[SelectedGamePriority] = SettingsJson.encodeToString(settings.selectedGamePriority)

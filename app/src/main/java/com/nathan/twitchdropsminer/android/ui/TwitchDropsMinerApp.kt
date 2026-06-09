@@ -61,6 +61,7 @@ fun TwitchDropsMinerApp(
     onToggleGamePriority: (String) -> Unit,
     onSetGamePriority: (String, Int) -> Unit,
     onClearGamePriority: () -> Unit,
+    onSetCampaignExclusion: (Set<String>, Boolean) -> Unit,
     onClearLogs: () -> Unit,
     onRunInForegroundChanged: (Boolean) -> Unit,
     onWatchIntervalChanged: (Int) -> Unit,
@@ -104,6 +105,7 @@ fun TwitchDropsMinerApp(
                     onToggleGamePriority = onToggleGamePriority,
                     onSetGamePriority = onSetGamePriority,
                     onClearGamePriority = onClearGamePriority,
+                    onSetCampaignExclusion = onSetCampaignExclusion,
                     onClearLogs = onClearLogs,
                     onRunInForegroundChanged = onRunInForegroundChanged,
                     onWatchIntervalChanged = onWatchIntervalChanged,
@@ -138,6 +140,7 @@ private fun MainScaffold(
     onToggleGamePriority: (String) -> Unit,
     onSetGamePriority: (String, Int) -> Unit,
     onClearGamePriority: () -> Unit,
+    onSetCampaignExclusion: (Set<String>, Boolean) -> Unit,
     onClearLogs: () -> Unit,
     onRunInForegroundChanged: (Boolean) -> Unit,
     onWatchIntervalChanged: (Int) -> Unit,
@@ -195,6 +198,7 @@ private fun MainScaffold(
                     onToggleGamePriority = onToggleGamePriority,
                     onSetGamePriority = onSetGamePriority,
                     onClearPriority = onClearGamePriority,
+                    onSetCampaignExclusion = onSetCampaignExclusion,
                 )
 
                 MainDestination.Activity -> ActivityScreen(snapshot = uiState.snapshot)

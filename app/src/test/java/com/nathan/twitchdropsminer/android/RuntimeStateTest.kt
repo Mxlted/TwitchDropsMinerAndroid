@@ -10,6 +10,7 @@ import com.nathan.twitchdropsminer.android.data.model.LoginSession
 import com.nathan.twitchdropsminer.android.data.model.LoginState
 import com.nathan.twitchdropsminer.android.data.model.MinerStatus
 import com.nathan.twitchdropsminer.android.data.model.RuntimePhase
+import com.nathan.twitchdropsminer.android.runtime.ActiveWatchGuard
 import com.nathan.twitchdropsminer.android.runtime.CampaignCandidateDecision
 import com.nathan.twitchdropsminer.android.runtime.CampaignPrioritySelector
 import com.nathan.twitchdropsminer.android.runtime.CampaignSelectionMode
@@ -20,6 +21,7 @@ import com.nathan.twitchdropsminer.android.runtime.UnlinkedProgressProbeResult
 import java.time.Duration
 import java.time.Instant
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -92,6 +94,23 @@ class RuntimeStateTest {
     }
 
     @Test
+    fun gamePrioritySkipsExcludedCampaignsBeforeLowerPriorityFallback() {
+        val excludedHigherPriority = earnableCampaign("campaign-1", "Higher Priority")
+        val lowerPriority = earnableCampaign("campaign-2", "Lower Priority")
+        val settings = AppSettings(
+            selectedGamePriority = listOf("Higher Priority", "Lower Priority"),
+            excludedCampaignIds = setOf("campaign-1"),
+        ).normalized()
+
+        val selected = CampaignPrioritySelector.select(
+            settings,
+            listOf(excludedHigherPriority, lowerPriority),
+        )
+
+        assertEquals("campaign-2", selected?.id)
+    }
+
+    @Test
     fun gamePriorityCandidatesKeepLowerPriorityGamesAsFallbacks() {
         val firstPriority = earnableCampaign("campaign-1", "First Priority")
         val secondPriority = earnableCampaign("campaign-2", "Second Priority")
@@ -145,6 +164,28 @@ class RuntimeStateTest {
     }
 
     @Test
+    fun autoModeSkipsExcludedCampaigns() {
+        val excluded = earnableCampaign("campaign-1", "Excluded Game")
+        val included = earnableCampaign("campaign-2", "Included Game")
+        val settings = AppSettings(excludedCampaignIds = setOf("campaign-1")).normalized()
+
+        val decision = CampaignPrioritySelector.initialDecision(settings, listOf(excluded, included))
+
+        assertEquals(CampaignSelectionMode.Auto, (decision as CampaignCandidateDecision.Try).mode)
+        assertEquals(listOf("campaign-2"), decision.candidates.map { it.id })
+    }
+
+    @Test
+    fun activeWatchStopsWhenCurrentCampaignBecomesExcluded() {
+        val campaign = earnableCampaign("campaign-1", "Active Game")
+        val included = AppSettings().normalized()
+        val excluded = AppSettings(excludedCampaignIds = setOf("CAMPAIGN-1")).normalized()
+
+        assertFalse(ActiveWatchGuard.shouldStopForExcludedCampaign(included, campaign))
+        assertTrue(ActiveWatchGuard.shouldStopForExcludedCampaign(excluded, campaign))
+    }
+
+    @Test
     fun completePrioritizedGamesFallBackToAutoOnlyWhenEnabled() {
         val complete = completedCampaign("campaign-1", "Selected Game")
         val other = earnableCampaign("campaign-2", "Other Game")
@@ -162,6 +203,62 @@ class RuntimeStateTest {
             (enabledDecision as CampaignCandidateDecision.Try).mode,
         )
         assertEquals(listOf("campaign-2"), enabledDecision.candidates.map { it.id })
+    }
+
+    @Test
+    fun completePriorityFallbackSkipsExcludedCampaigns() {
+        val complete = completedCampaign("campaign-1", "Selected Game")
+        val excludedOther = earnableCampaign("campaign-2", "Other Game")
+        val settings = AppSettings(
+            selectedGamePriority = listOf("Selected Game"),
+            fallbackToAutoWhenPrioritizedComplete = true,
+            excludedCampaignIds = setOf("campaign-2"),
+        ).normalized()
+
+        val decision = CampaignPrioritySelector.initialDecision(settings, listOf(complete, excludedOther))
+
+        assertEquals("All prioritized games are complete", (decision as CampaignCandidateDecision.Idle).task)
+        assertEquals(
+            "Auto Mode fallback is enabled, but no other eligible campaign is available.",
+            decision.detail,
+        )
+    }
+
+    @Test
+    fun allPriorityCampaignsExcludedFallBackToAutoWhenFallbackEnabled() {
+        val excludedPriority = earnableCampaign("campaign-1", "Selected Game")
+        val other = earnableCampaign("campaign-2", "Other Game")
+        val settings = AppSettings(
+            selectedGamePriority = listOf("Selected Game"),
+            fallbackToAutoWhenPrioritizedComplete = true,
+            excludedCampaignIds = setOf("campaign-1"),
+        ).normalized()
+
+        val decision = CampaignPrioritySelector.initialDecision(settings, listOf(excludedPriority, other))
+
+        assertEquals(
+            CampaignSelectionMode.AutoFallbackPrioritiesComplete,
+            (decision as CampaignCandidateDecision.Try).mode,
+        )
+        assertEquals(listOf("campaign-2"), decision.candidates.map { it.id })
+    }
+
+    @Test
+    fun allPriorityCampaignsExcludedIdleClearlyWhenFallbackDisabled() {
+        val excludedPriority = earnableCampaign("campaign-1", "Selected Game")
+        val other = earnableCampaign("campaign-2", "Other Game")
+        val settings = AppSettings(
+            selectedGamePriority = listOf("Selected Game"),
+            excludedCampaignIds = setOf("campaign-1"),
+        ).normalized()
+
+        val decision = CampaignPrioritySelector.initialDecision(settings, listOf(excludedPriority, other))
+
+        assertEquals("Prioritized campaigns are excluded", (decision as CampaignCandidateDecision.Idle).task)
+        assertEquals(
+            "Auto Mode fallback for unavailable prioritized campaigns is disabled.",
+            decision.detail,
+        )
     }
 
     @Test
@@ -220,6 +317,31 @@ class RuntimeStateTest {
     }
 
     @Test
+    fun noChannelPriorityFallbackSkipsExcludedCampaigns() {
+        val prioritized = earnableCampaign("campaign-1", "Selected Game")
+        val excludedOther = earnableCampaign("campaign-2", "Other Game")
+        val settings = AppSettings(
+            selectedGamePriority = listOf("Selected Game"),
+            fallbackToAutoWhenNoPrioritizedChannel = true,
+            excludedCampaignIds = setOf("campaign-2"),
+        ).normalized()
+
+        val decision = CampaignPrioritySelector.afterNoPrioritizedChannelDecision(
+            settings,
+            listOf(prioritized, excludedOther),
+        )
+
+        assertEquals(
+            "No prioritized games have eligible live channels",
+            (decision as CampaignCandidateDecision.Idle).task,
+        )
+        assertEquals(
+            "Auto Mode fallback is enabled, but no other eligible campaign is available.",
+            decision.detail,
+        )
+    }
+
+    @Test
     fun autoModeDoesNotUseSampleDataUnlessExplicitlyEnabled() {
         val settings = AppSettings().normalized()
         val decision = CampaignPrioritySelector.initialDecision(settings, emptyList())
@@ -263,6 +385,20 @@ class RuntimeStateTest {
             (afterLinkedNoChannel as CampaignCandidateDecision.Try).mode,
         )
         assertEquals(listOf("campaign-2"), afterLinkedNoChannel.candidates.map { it.id })
+    }
+
+    @Test
+    fun unlinkedFallbackSkipsExcludedCampaigns() {
+        val unlinked = unlinkedCampaign("campaign-1", "Unlinked Game")
+        val settings = AppSettings(
+            allowWatchingUnlinkedGames = true,
+            excludedCampaignIds = setOf("campaign-1"),
+        ).normalized()
+
+        val decision = CampaignPrioritySelector.initialDecision(settings, listOf(unlinked))
+
+        assertEquals("No available campaign can be mined", (decision as CampaignCandidateDecision.Idle).task)
+        assertEquals(emptyList<Campaign>(), CampaignPrioritySelector.unlinkedCandidates(settings, listOf(unlinked)))
     }
 
     @Test

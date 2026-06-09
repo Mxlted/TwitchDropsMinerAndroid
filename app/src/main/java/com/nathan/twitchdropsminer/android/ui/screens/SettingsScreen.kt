@@ -22,6 +22,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -67,30 +68,33 @@ fun SettingsScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Text(
-            text = "Settings",
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold,
+        ScreenHeader(
+            title = "Settings",
+            subtitle = "Runtime preferences and local-only controls",
         )
 
         SectionCard {
-            SectionTitle("Local Runtime")
+            SectionTitle("Local Runtime", "Timing and foreground-service behavior.")
             ToggleRow(
-                title = "Run in foreground service",
-                subtitle = "Use a persistent notification while mining.",
+                title = "Foreground service while mining",
+                subtitle = "Shows a persistent notification so Android treats mining as active work.",
                 checked = settings.runInForeground,
                 onCheckedChange = onRunInForegroundChanged,
             )
-            Text("Watch interval: ${watchInterval.toInt()} seconds", color = AppMuted)
-            Slider(
+            SettingSlider(
+                title = "Watch heartbeat interval",
+                valueLabel = "${watchInterval.toInt()} seconds",
+                helper = "How often the local runtime sends watch/progress activity while mining.",
                 value = watchInterval,
                 onValueChange = { watchInterval = it },
                 onValueChangeFinished = { onWatchIntervalChanged(watchInterval.toInt()) },
                 valueRange = 20f..180f,
                 steps = 15,
             )
-            Text("Inventory refresh: ${inventoryRefresh.toInt()} minutes", color = AppMuted)
-            Slider(
+            SettingSlider(
+                title = "Inventory refresh interval",
+                valueLabel = "${inventoryRefresh.toInt()} minutes",
+                helper = "How often campaigns and drop progress are reloaded from Twitch.",
                 value = inventoryRefresh,
                 onValueChange = { inventoryRefresh = it },
                 onValueChangeFinished = { onInventoryRefreshChanged(inventoryRefresh.toInt()) },
@@ -100,46 +104,50 @@ fun SettingsScreen(
         }
 
         SectionCard {
-            SectionTitle("Keep Active Screen")
+            SectionTitle("Keep Active Screen", "Optional display-awake mode for active sessions.")
             ToggleRow(
-                title = "Keep active screen mode",
-                subtitle = "Allow a mostly black tap-to-return screen and keep the display awake.",
+                title = "Enable dim keep-active screen",
+                subtitle = "Adds a mostly black tap-to-return screen and keeps the display awake.",
                 checked = settings.keepActiveScreenMode,
                 onCheckedChange = onKeepActiveScreenModeChanged,
             )
             Text(
-                text = "This can use more battery. Enable it only when you intentionally keep the app active.",
+                text = "This can use more battery. It does not change mining selection or claiming behavior.",
                 color = AppMuted,
+                style = MaterialTheme.typography.bodySmall,
             )
         }
 
         SectionCard {
-            SectionTitle("Game Priority Fallbacks")
+            SectionTitle(
+                title = "Game Priority Fallbacks",
+                subtitle = "Priority remains strict unless one of these fallbacks is enabled.",
+            )
             ToggleRow(
-                title = "Fallback when prioritized games are complete",
+                title = "Use Auto Mode after priority completes",
                 subtitle = "Switch to Auto Mode for other eligible games after every prioritized game is complete.",
                 checked = settings.fallbackToAutoWhenPrioritizedComplete,
                 onCheckedChange = onFallbackToAutoWhenPrioritizedCompleteChanged,
             )
             ToggleRow(
-                title = "Fallback when prioritized games have no live channel",
+                title = "Use Auto Mode when priority has no live channel",
                 subtitle = "Switch to Auto Mode when prioritized games have work but no eligible live channel.",
                 checked = settings.fallbackToAutoWhenNoPrioritizedChannel,
                 onCheckedChange = onFallbackToAutoWhenNoPrioritizedChannelChanged,
             )
             ToggleRow(
-                title = "Allow watching unlinked games",
-                subtitle = "After prioritized and linked games are tried, watch unlinked games only if Twitch progress increases.",
+                title = "Try unlinked games after linked options",
+                subtitle = "Opt in to unlinked watch attempts only after prioritized and linked games are tried.",
                 checked = settings.allowWatchingUnlinkedGames,
                 onCheckedChange = onAllowWatchingUnlinkedGamesChanged,
             )
         }
 
         SectionCard {
-            SectionTitle("Reliability")
+            SectionTitle("Reliability", "Controls for device reliability and explicit demo data.")
             ToggleRow(
-                title = "Development sample data",
-                subtitle = "Use local sample campaigns/channels only for explicit demo or endpoint testing.",
+                title = "Demo sample fallback",
+                subtitle = "Use local sample campaigns/channels only for explicit demos or endpoint testing.",
                 checked = settings.useSampleDataFallback,
                 onCheckedChange = onSampleFallbackChanged,
             )
@@ -149,10 +157,10 @@ fun SettingsScreen(
         }
 
         SectionCard {
-            SectionTitle("Advanced")
+            SectionTitle("Advanced", "Optional backend comparison tools for development.")
             ToggleRow(
-                title = "Optional backend debug mode",
-                subtitle = "Reserved for comparing against a local PC/backend. Not required for normal use.",
+                title = "Show optional backend URL",
+                subtitle = "Reserved for comparing against a local PC/backend. Normal Android mining does not need it.",
                 checked = settings.advancedBackendMode,
                 onCheckedChange = onAdvancedBackendModeChanged,
             )
@@ -175,17 +183,57 @@ fun SettingsScreen(
         }
 
         SectionCard {
-            SectionTitle("Debug")
+            SectionTitle("Debug", "Local diagnostics and session reset.")
             ToggleRow(
                 title = "Verbose local logs",
+                subtitle = "Record additional local messages for troubleshooting long runs.",
                 checked = settings.debugLogging,
                 onCheckedChange = onDebugLoggingChanged,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                 OutlinedButton(onClick = onResetSession, modifier = Modifier.weight(1f)) {
-                    Text("Reset Session")
+                    Text("Reset Twitch Session")
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun SettingSlider(
+    title: String,
+    valueLabel: String,
+    helper: String,
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    onValueChangeFinished: () -> Unit,
+    valueRange: ClosedFloatingPointRange<Float>,
+    steps: Int,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(text = title, fontWeight = FontWeight.SemiBold)
+            Text(
+                text = valueLabel,
+                style = MaterialTheme.typography.labelMedium,
+                color = AppMuted,
+            )
+        }
+        Text(
+            text = helper,
+            style = MaterialTheme.typography.bodySmall,
+            color = AppMuted,
+        )
+        Slider(
+            value = value,
+            onValueChange = onValueChange,
+            onValueChangeFinished = onValueChangeFinished,
+            valueRange = valueRange,
+            steps = steps,
+        )
     }
 }

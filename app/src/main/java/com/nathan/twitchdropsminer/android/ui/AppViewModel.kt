@@ -128,6 +128,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         graph.localMinerRuntime.clearGamePriority()
     }
 
+    fun setCampaignExclusion(campaignIds: Set<String>, excluded: Boolean) {
+        viewModelScope.launch {
+            graph.settingsRepository.setCampaignExclusion(campaignIds, excluded)
+        }
+    }
+
     fun selectChannel(channelId: Long) {
         graph.localMinerRuntime.selectChannel(channelId)
     }

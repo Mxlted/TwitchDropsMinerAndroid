@@ -17,6 +17,7 @@ data class AppSettings(
     val fallbackToAutoWhenPrioritizedComplete: Boolean = false,
     val fallbackToAutoWhenNoPrioritizedChannel: Boolean = false,
     val allowWatchingUnlinkedGames: Boolean = false,
+    val excludedCampaignIds: Set<String> = emptySet(),
     // Legacy campaign IDs are retained so older saved preferences keep loading.
     val selectedCampaignIds: Set<String> = emptySet(),
     // Legacy unordered game set. selectedGamePriority is the source of truth.
@@ -58,10 +59,13 @@ data class AppSettings(
             .takeIf { it >= 0 }
 
     fun allowsCampaign(campaign: Campaign): Boolean =
-        !hasGamePriority || isGamePrioritized(campaign.gameName)
+        !isCampaignExcluded(campaign) && (!hasGamePriority || isGamePrioritized(campaign.gameName))
 
     fun isCampaignSelected(campaign: Campaign): Boolean =
         isGamePrioritized(campaign.gameName)
+
+    fun isCampaignExcluded(campaign: Campaign): Boolean =
+        excludedCampaignIds.any { it.equals(campaign.id, ignoreCase = true) }
 
     fun normalized(): AppSettings {
         val normalizedWatchInterval = watchIntervalSeconds.coerceIn(
@@ -77,10 +81,16 @@ data class AppSettings(
             .map { it.trim() }
             .filter { it.isNotBlank() }
             .distinctBy { it.lowercase() }
+        val normalizedExcludedCampaignIds = excludedCampaignIds
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase() }
+            .toSet()
         return copy(
             backendUrl = normalizedBackendUrl,
             watchIntervalSeconds = normalizedWatchInterval,
             inventoryRefreshMinutes = normalizedRefresh,
+            excludedCampaignIds = normalizedExcludedCampaignIds,
             selectedGames = normalizedGamePriority.toSet(),
             selectedGamePriority = normalizedGamePriority,
             pollIntervalSeconds = pollIntervalSeconds.coerceIn(

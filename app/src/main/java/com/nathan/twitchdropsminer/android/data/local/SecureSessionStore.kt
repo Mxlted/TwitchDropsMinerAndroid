@@ -3,6 +3,7 @@ package com.nathan.twitchdropsminer.android.data.local
 import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKeys
+import androidx.core.content.edit
 import com.nathan.twitchdropsminer.android.data.model.StoredTwitchSession
 import java.time.Instant
 
@@ -22,19 +23,19 @@ class SecureSessionStore(context: Context) {
     }
 
     fun saveBackendSessionLabel(label: String) {
-        preferences.edit().putString("backend_session_label", label).apply()
+        preferences.edit { putString("backend_session_label", label) }
     }
 
     fun backendSessionLabel(): String? =
         preferences.getString("backend_session_label", null)
 
     fun saveTwitchSession(session: StoredTwitchSession) {
-        preferences.edit()
-            .putString("twitch_access_token", session.accessToken)
-            .putString("twitch_user_id", session.userId)
-            .putString("twitch_device_id", session.deviceId)
-            .putString("twitch_saved_at", session.savedAt.toString())
-            .apply()
+        preferences.edit {
+            putString("twitch_access_token", session.accessToken)
+            putString("twitch_user_id", session.userId)
+            putString("twitch_device_id", session.deviceId)
+            putString("twitch_saved_at", session.savedAt.toString())
+        }
     }
 
     fun twitchSession(): StoredTwitchSession? {
@@ -53,6 +54,6 @@ class SecureSessionStore(context: Context) {
     }
 
     fun clear() {
-        preferences.edit().clear().apply()
+        preferences.edit { clear() }
     }
 }

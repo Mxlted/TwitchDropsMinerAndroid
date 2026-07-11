@@ -15,15 +15,15 @@ class BackendMappersTest {
         val status = mapper.parseStatus(
             """
             {
-              "status": "Watching sample_channel",
+              "status": "Watching test_channel",
               "login": {"status": "Logged in", "user_id": 12345},
-              "manual_mode": {"active": true, "game_name": "Sample Game", "channel_name": "sample_channel"},
+              "manual_mode": {"active": true, "game_name": "Test Game", "channel_name": "test_channel"},
               "drops_claimed_this_session": 2
             }
             """.trimIndent(),
         )
 
-        assertEquals("Watching sample_channel", status.statusText)
+        assertEquals("Watching test_channel", status.statusText)
         assertEquals(LoginState.LoggedIn, status.login.state)
         assertEquals("12345", status.login.userId)
         assertTrue(status.manualMode)

@@ -17,7 +17,6 @@ class SettingsPersistenceTest {
             SettingsPreferencesMapper.HasCompletedOnboarding to true,
             SettingsPreferencesMapper.WatchIntervalSeconds to 3,
             SettingsPreferencesMapper.InventoryRefreshMinutes to 5,
-            SettingsPreferencesMapper.UseSampleDataFallback to true,
             SettingsPreferencesMapper.FallbackToAutoWhenPrioritizedComplete to true,
             SettingsPreferencesMapper.FallbackToAutoWhenNoPrioritizedChannel to true,
             SettingsPreferencesMapper.AllowWatchingUnlinkedGames to true,
@@ -30,7 +29,6 @@ class SettingsPersistenceTest {
         val settings = SettingsPreferencesMapper.fromPreferences(preferences)
 
         assertTrue(settings.hasCompletedOnboarding)
-        assertTrue(settings.useSampleDataFallback)
         assertTrue(settings.fallbackToAutoWhenPrioritizedComplete)
         assertTrue(settings.fallbackToAutoWhenNoPrioritizedChannel)
         assertTrue(settings.allowWatchingUnlinkedGames)
@@ -99,11 +97,9 @@ class SettingsPersistenceTest {
     }
 
     @Test
-    fun sampleFallbackDefaultsToExplicitOptIn() {
+    fun unlinkedWatchingDefaultsToOptIn() {
         val settings = SettingsPreferencesMapper.fromPreferences(preferencesOf())
 
-        assertEquals(false, settings.useSampleDataFallback)
-        assertEquals(false, settings.sampleMode)
         assertEquals(false, settings.allowWatchingUnlinkedGames)
     }
 

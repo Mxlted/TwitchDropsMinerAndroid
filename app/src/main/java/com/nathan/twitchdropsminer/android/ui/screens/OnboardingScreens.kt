@@ -7,15 +7,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.nathan.twitchdropsminer.android.ui.theme.AppMuted
@@ -23,7 +24,6 @@ import com.nathan.twitchdropsminer.android.ui.theme.AppMuted
 @Composable
 fun OnboardingScreen(
     onContinue: () -> Unit,
-    onEnableSampleMode: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -68,10 +68,7 @@ fun OnboardingScreen(
         }
 
         Button(onClick = onContinue, modifier = Modifier.fillMaxWidth()) {
-            Text("Continue")
-        }
-        OutlinedButton(onClick = onEnableSampleMode, modifier = Modifier.fillMaxWidth()) {
-            Text("Continue With Demo Sample Data")
+            Text("Continue to Setup")
         }
     }
 }
@@ -82,11 +79,18 @@ fun ToggleRow(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     subtitle: String? = null,
+    enabled: Boolean = true,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 2.dp),
+            .toggleable(
+                value = checked,
+                enabled = enabled,
+                role = Role.Switch,
+                onValueChange = onCheckedChange,
+            )
+            .padding(vertical = 10.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -105,6 +109,6 @@ fun ToggleRow(
                 Text(text = subtitle, color = AppMuted, style = MaterialTheme.typography.bodySmall)
             }
         }
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        Switch(checked = checked, onCheckedChange = null, enabled = enabled)
     }
 }

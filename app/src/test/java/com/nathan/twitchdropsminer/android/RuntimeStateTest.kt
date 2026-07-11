@@ -10,12 +10,12 @@ import com.nathan.twitchdropsminer.android.data.model.LoginSession
 import com.nathan.twitchdropsminer.android.data.model.LoginState
 import com.nathan.twitchdropsminer.android.data.model.MinerStatus
 import com.nathan.twitchdropsminer.android.data.model.RuntimePhase
+import com.nathan.twitchdropsminer.android.data.model.RuntimeSnapshot
 import com.nathan.twitchdropsminer.android.runtime.ActiveWatchGuard
 import com.nathan.twitchdropsminer.android.runtime.CampaignCandidateDecision
 import com.nathan.twitchdropsminer.android.runtime.CampaignPrioritySelector
 import com.nathan.twitchdropsminer.android.runtime.CampaignSelectionMode
 import com.nathan.twitchdropsminer.android.runtime.MinerRuntimeReducer
-import com.nathan.twitchdropsminer.android.runtime.SampleTwitchData
 import com.nathan.twitchdropsminer.android.runtime.UnlinkedProgressProbe
 import com.nathan.twitchdropsminer.android.runtime.UnlinkedProgressProbeResult
 import java.time.Duration
@@ -72,12 +72,9 @@ class RuntimeStateTest {
     }
 
     @Test
-    fun sampleCampaignsExposeEarnableLocalWork() {
-        val campaign = SampleTwitchData.campaigns().first()
-
-        assertEquals(true, campaign.canEarnLocally)
-        assertEquals("Sample Game", campaign.gameName)
-        assertEquals(3, campaign.totalDrops)
+    fun miningLifecycleIsIndependentFromIdlePhase() {
+        assertTrue(RuntimeSnapshot(phase = RuntimePhase.Idle, miningActive = true).isRunning)
+        assertFalse(RuntimeSnapshot(phase = RuntimePhase.Watching, miningActive = false).isRunning)
     }
 
     @Test
@@ -342,12 +339,10 @@ class RuntimeStateTest {
     }
 
     @Test
-    fun autoModeDoesNotUseSampleDataUnlessExplicitlyEnabled() {
+    fun autoModeIdlesWhenNoCampaignsAreAvailable() {
         val settings = AppSettings().normalized()
         val decision = CampaignPrioritySelector.initialDecision(settings, emptyList())
 
-        assertEquals(false, settings.useSampleDataFallback)
-        assertEquals(false, settings.sampleMode)
         assertEquals("No available campaign can be mined", (decision as CampaignCandidateDecision.Idle).task)
     }
 

@@ -13,8 +13,11 @@ import com.nathan.twitchdropsminer.android.data.model.RuntimeActivity
 import com.nathan.twitchdropsminer.android.data.model.RuntimePhase
 import com.nathan.twitchdropsminer.android.data.model.RuntimeSnapshot
 import com.nathan.twitchdropsminer.android.data.model.StoredTwitchSession
+import com.nathan.twitchdropsminer.android.data.network.NetworkStatusProvider
 import com.nathan.twitchdropsminer.android.data.twitch.CurrentDropProgress
 import com.nathan.twitchdropsminer.android.data.twitch.TwitchApi
+import com.nathan.twitchdropsminer.android.data.twitch.TwitchApiErrorType
+import com.nathan.twitchdropsminer.android.data.twitch.TwitchApiException
 import java.time.Duration
 import java.time.Instant
 import kotlinx.coroutines.CancellationException
@@ -31,19 +34,23 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 private const val UnlinkedProgressCheckIntervals = 3L
+private const val RejectedWatchFailureThreshold = 3
 private val MinUnlinkedProgressCheckDelay: Duration = Duration.ofMinutes(2)
 private val MaxUnlinkedProgressCheckDelay: Duration = Duration.ofMinutes(5)
 private val UnlinkedNoProgressRetryDelay: Duration = Duration.ofMinutes(30)
+private val FailedChannelRetryDelay: Duration = Duration.ofMinutes(15)
 
 class LocalMinerRuntime(
     private val settingsRepository: SettingsRepository,
     private val secureSessionStore: SecureSessionStore,
     private val logRepository: LogRepository,
     private val twitchApiClient: TwitchApi,
+    private val networkStatusProvider: NetworkStatusProvider,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val mutex = Mutex()
@@ -60,7 +67,10 @@ class LocalMinerRuntime(
     private var dropsClaimedThisSession = 0
     private val dropClaimHandler = DropClaimHandler(twitchApiClient)
     private val unlinkedNoProgressSkips = mutableMapOf<String, Instant>()
+    private val failedChannelSkips = mutableMapOf<Long, Instant>()
+    private val channelControlRequests = MutableStateFlow(ChannelControlRequest())
     private var lastLoggedExcludedCampaignIds: Set<String> = emptySet()
+    private var waitingForNetwork = false
 
     val snapshot: StateFlow<RuntimeSnapshot> = _snapshot
 
@@ -91,6 +101,7 @@ class LocalMinerRuntime(
                 val existingDeviceId = secureSessionStore.twitchSession()?.deviceId
                 val deviceId = existingDeviceId ?: twitchApiClient.newDeviceId()
                 try {
+                    awaitUsableNetwork()
                     appendActivity(
                         RuntimePhase.Authenticating,
                         "Starting Twitch device login",
@@ -116,6 +127,10 @@ class LocalMinerRuntime(
 
                     while (currentCoroutineContext().isActive && Instant.now().isBefore(authorization.expiresAt)) {
                         delay(authorization.intervalSeconds * 1000L)
+                        awaitUsableNetwork()
+                        if (!Instant.now().isBefore(authorization.expiresAt)) {
+                            break
+                        }
                         val token = twitchApiClient.pollDeviceToken(
                             authorization.deviceCode,
                             deviceId,
@@ -173,25 +188,26 @@ class LocalMinerRuntime(
         }
         dropClaimHandler.clearAttempts()
         unlinkedNoProgressSkips.clear()
+        failedChannelSkips.clear()
         lastLoggedExcludedCampaignIds = emptySet()
+        waitingForNetwork = false
+        _snapshot.update { it.copy(miningActive = true, error = null) }
         miningJob = scope.launch {
             appendActivity(RuntimePhase.LoadingInventory, "Local miner started")
             try {
                 runMiningLoop()
             } catch (error: CancellationException) {
                 throw error
-            } catch (error: Throwable) {
-                updateSnapshot(RuntimePhase.Error, "Local miner stopped after an unexpected error") {
-                    it.copy(
-                        currentChannel = null,
-                        error = error.message ?: "Unexpected local miner failure.",
-                    )
+            } catch (error: TwitchApiException) {
+                if (error.type == TwitchApiErrorType.InvalidToken) {
+                    expireTwitchSession(error.message)
+                } else {
+                    reportUnexpectedMinerFailure(error)
                 }
-                appendActivity(
-                    RuntimePhase.Error,
-                    "Local miner stopped after unexpected error",
-                    error.message,
-                )
+            } catch (error: Throwable) {
+                reportUnexpectedMinerFailure(error)
+            } finally {
+                _snapshot.update { it.copy(miningActive = false) }
             }
         }
     }
@@ -209,7 +225,13 @@ class LocalMinerRuntime(
             miningJob = null
         }
         updateSnapshot(RuntimePhase.Stopped, "Local miner stopped") {
-            it.copy(currentChannel = null, activeCampaign = null, activeDrop = null)
+            it.copy(
+                currentChannel = null,
+                activeCampaign = null,
+                activeDrop = null,
+                miningActive = false,
+                channelSearchInProgress = false,
+            )
         }
         appendActivity(RuntimePhase.Stopped, "Local miner stopped")
     }
@@ -217,7 +239,31 @@ class LocalMinerRuntime(
     suspend fun refreshInventoryOnce() {
         val settings = settingsRepository.settings.first()
         val session = secureSessionStore.twitchSession()
-        val campaignLoad = loadCampaigns(settings, session)
+        if (session == null) {
+            updateSnapshot(RuntimePhase.Authenticating, "Twitch login required") {
+                it.copy(
+                    account = LoginSession(LoginState.LoginRequired, "Start Twitch device login"),
+                    error = "Twitch login required.",
+                )
+            }
+            return
+        }
+        awaitUsableNetwork()
+        val campaignLoad = loadCampaigns(
+            settings = settings,
+            session = session,
+            previousCampaigns = _snapshot.value.campaigns,
+        )
+        if (campaignLoad.failure != null) {
+            updateSnapshot(RuntimePhase.Error, "Inventory refresh failed") {
+                it.copy(
+                    campaigns = markSelected(campaignLoad.campaigns, campaignLoad.settings),
+                    progressSummary = campaignLoad.campaigns.progressSummary(),
+                    error = campaignLoad.failure,
+                )
+            }
+            return
+        }
         val campaigns = campaignLoad.campaigns
         val effectiveSettings = campaignLoad.settings
         updateSnapshot(RuntimePhase.Idle, "Inventory refreshed") {
@@ -277,18 +323,31 @@ class LocalMinerRuntime(
     }
 
     fun selectChannel(channelId: Long) {
+        val current = _snapshot.value
+        if (
+            !current.isRunning ||
+            current.watchingChannel?.id == channelId ||
+            current.channels.none { channel -> channel.id == channelId }
+        ) {
+            return
+        }
+        _snapshot.update {
+            it.copy(
+                phase = RuntimePhase.FindingChannel,
+                currentTask = "Switching to selected channel",
+                channelSearchInProgress = false,
+                lastUpdate = Instant.now(),
+                error = null,
+            )
+        }
+        channelControlRequests.update { request ->
+            ChannelControlRequest(
+                id = request.id + 1L,
+                selectedChannelId = channelId,
+            )
+        }
         scope.launch {
-            val selected = _snapshot.value.channels.firstOrNull { it.id == channelId }
-                ?: return@launch
-            updateSnapshot(RuntimePhase.Watching, "Selected ${selected.name}") {
-                it.copy(
-                    currentChannel = selected.copy(watching = true),
-                    channels = it.channels.map { channel ->
-                        channel.copy(watching = channel.id == channelId)
-                    },
-                )
-            }
-            appendActivity(RuntimePhase.Watching, "Manual channel selected", selected.name)
+            appendActivity(RuntimePhase.FindingChannel, "Channel selection requested")
         }
     }
 
@@ -301,6 +360,8 @@ class LocalMinerRuntime(
             dropsClaimedThisSession = 0
             dropClaimHandler.clearAttempts()
             unlinkedNoProgressSkips.clear()
+            failedChannelSkips.clear()
+            waitingForNetwork = false
             _snapshot.value = RuntimeSnapshot(
                 phase = RuntimePhase.Stopped,
                 account = LoginSession(LoginState.LoggedOut, "Twitch login required"),
@@ -326,32 +387,88 @@ class LocalMinerRuntime(
             return
         }
 
-        runCatchingCancellable {
-            twitchApiClient.validateAccessToken(session.accessToken)
-        }.onFailure { error ->
-            updateSnapshot(RuntimePhase.Authenticating, "Stored Twitch session needs renewal") {
+        var validationFailures = 0
+        while (currentCoroutineContext().isActive) {
+            awaitUsableNetwork()
+            val validation = runCatchingCancellable {
+                twitchApiClient.validateAccessToken(session.accessToken)
+            }
+            if (validation.isSuccess) {
+                break
+            }
+            val error = validation.exceptionOrNull() ?: continue
+            if (error is TwitchApiException && error.type == TwitchApiErrorType.InvalidToken) {
+                expireTwitchSession(error.message)
+                return
+            }
+            validationFailures += 1
+            val retryDelay = RuntimeRetryBackoff.delayFor(validationFailures)
+            updateSnapshot(RuntimePhase.Error, "Unable to validate Twitch session") {
                 it.copy(
-                    account = LoginSession(LoginState.Expired, "Twitch session expired"),
-                    error = error.message ?: "Twitch session expired",
+                    error = "${error.message ?: "Twitch validation failed"} Retrying in ${retryDelay.runtimeLabel()}.",
                 )
             }
-            appendActivity(RuntimePhase.Authenticating, "Stored Twitch session expired")
-            return
+            delay(retryDelay.toMillis())
         }
 
+        var inventoryFailures = 0
+        var channelDiscoveryFailures = 0
+        var handledChannelControlRequestId = channelControlRequests.value.id
         while (currentCoroutineContext().isActive) {
+            awaitUsableNetwork()
             var settings = settingsRepository.settings.first()
             updateSnapshot(RuntimePhase.LoadingInventory, "Loading Twitch drops inventory")
-            val campaignLoad = loadCampaigns(settings, session)
+            val campaignLoad = loadCampaigns(
+                settings = settings,
+                session = session,
+                previousCampaigns = _snapshot.value.campaigns,
+            )
             settings = campaignLoad.settings
+            if (campaignLoad.failure != null) {
+                inventoryFailures += 1
+                val retryDelay = RuntimeRetryBackoff.delayFor(inventoryFailures)
+                updateSnapshot(RuntimePhase.Error, "Inventory unavailable; retrying") {
+                    it.copy(
+                        campaigns = markSelected(campaignLoad.campaigns, settings),
+                        channels = emptyList(),
+                        currentChannel = null,
+                        activeCampaign = null,
+                        activeDrop = null,
+                        progressSummary = campaignLoad.campaigns.progressSummary(),
+                        error = "${campaignLoad.failure} Retrying in ${retryDelay.runtimeLabel()}.",
+                    )
+                }
+                delay(retryDelay.toMillis())
+                continue
+            }
+            inventoryFailures = 0
             val campaigns = campaignLoad.campaigns
             var campaignSnapshot = campaigns
             campaignSnapshot = claimCompletedDrops(settings, session, campaignSnapshot)
-            val selectedWork = selectCampaignWork(
-                settings = settings,
-                session = session,
-                campaignSnapshot = campaignSnapshot,
-            )
+            val selectedWork = try {
+                selectCampaignWork(
+                    settings = settings,
+                    session = session,
+                    campaignSnapshot = campaignSnapshot,
+                )
+            } catch (error: ChannelDiscoveryUnavailableException) {
+                channelDiscoveryFailures += 1
+                val retryDelay = RuntimeRetryBackoff.delayFor(channelDiscoveryFailures)
+                updateSnapshot(RuntimePhase.Error, "Channel discovery unavailable; retrying") {
+                    it.copy(
+                        campaigns = markSelected(campaignSnapshot, settings),
+                        channels = emptyList(),
+                        currentChannel = null,
+                        activeCampaign = null,
+                        activeDrop = null,
+                        progressSummary = campaignSnapshot.progressSummary(),
+                        error = "${error.message} Retrying in ${retryDelay.runtimeLabel()}.",
+                    )
+                }
+                delay(retryDelay.toMillis())
+                continue
+            }
+            channelDiscoveryFailures = 0
             if (selectedWork is CampaignWorkSelection.Idle) {
                 updateSnapshot(RuntimePhase.Idle, selectedWork.task) {
                     it.copy(
@@ -370,8 +487,8 @@ class LocalMinerRuntime(
 
             val work = (selectedWork as CampaignWorkSelection.Selected).work
             var currentCampaign: Campaign = work.campaign
-            val currentChannel = work.channel.copy(watching = true)
-            val channels = work.channels
+            var currentChannel = work.channel.copy(watching = true)
+            var channels = work.channels
             val refreshAt = Instant.now().plus(Duration.ofMinutes(settings.inventoryRefreshMinutes.toLong()))
             var unlinkedProgressProbe = currentCampaign.startUnlinkedProgressProbe(settings)
             if (unlinkedProgressProbe != null) {
@@ -386,10 +503,99 @@ class LocalMinerRuntime(
                     "Will verify real Twitch progress in about ${unlinkedProgressProbe.checkWindowLabel}.",
                 )
             }
+            var consecutiveRejectedWatchEvents = 0
+            var transientWatchFailures = 0
             while (
                 currentCoroutineContext().isActive &&
                 Instant.now().isBefore(refreshAt)
             ) {
+                val resumedAfterNetworkLoss = awaitUsableNetwork()
+                if (!Instant.now().isBefore(refreshAt)) {
+                    break
+                }
+                if (resumedAfterNetworkLoss && unlinkedProgressProbe != null) {
+                    unlinkedProgressProbe = currentCampaign.startUnlinkedProgressProbe(settings)
+                    appendActivity(
+                        RuntimePhase.Watching,
+                        "Restarting unlinked progress check",
+                        "The network interruption is excluded from the progress-check window.",
+                    )
+                }
+                val pendingChannelControlRequest = channelControlRequests.value
+                if (pendingChannelControlRequest.id != handledChannelControlRequestId) {
+                    handledChannelControlRequestId = pendingChannelControlRequest.id
+                    val requestedChannelId = pendingChannelControlRequest.selectedChannelId
+                    if (requestedChannelId == null) {
+                        val search = findCompatibleChannels(
+                            session = session,
+                            campaign = currentCampaign,
+                            originalChannel = currentChannel,
+                        )
+                        channels = search.channels
+                        updateSnapshot(RuntimePhase.Watching, search.task) {
+                            it.copy(
+                                channels = channels.markWatching(currentChannel.id),
+                                currentChannel = currentChannel.copy(watching = true),
+                                activeCampaign = currentCampaign,
+                                activeDrop = currentCampaign.nextEarnableDrop(),
+                                channelSearchInProgress = false,
+                                error = null,
+                            )
+                        }
+                        appendActivity(
+                            RuntimePhase.Watching,
+                            "Compatible channel list updated",
+                            search.detail,
+                        )
+                    } else {
+                        val selected = ChannelPickerSelection.findCompatibleChannel(
+                            channels = channels,
+                            channelId = requestedChannelId,
+                        )
+                        if (selected == null || selected.id == currentChannel.id) {
+                            updateSnapshot(
+                                RuntimePhase.Watching,
+                                "Selected channel unavailable; keeping ${currentChannel.name}",
+                            ) {
+                                it.copy(
+                                    channels = channels.markWatching(currentChannel.id),
+                                    currentChannel = currentChannel.copy(watching = true),
+                                    channelSearchInProgress = false,
+                                    error = null,
+                                )
+                            }
+                            appendActivity(
+                                RuntimePhase.Watching,
+                                "Channel selection ignored",
+                                "The selected streamer is no longer compatible or live; ${currentChannel.name} remains active.",
+                            )
+                        } else {
+                            val previousChannel = currentChannel
+                            currentChannel = selected.copy(watching = true)
+                            consecutiveRejectedWatchEvents = 0
+                            transientWatchFailures = 0
+                            unlinkedProgressProbe = currentCampaign.startUnlinkedProgressProbe(settings)
+                            updateSnapshot(
+                                RuntimePhase.Watching,
+                                "Switched to ${currentChannel.name}",
+                            ) {
+                                it.copy(
+                                    channels = channels.markWatching(currentChannel.id),
+                                    currentChannel = currentChannel,
+                                    activeCampaign = currentCampaign,
+                                    activeDrop = currentCampaign.nextEarnableDrop(),
+                                    channelSearchInProgress = false,
+                                    error = null,
+                                )
+                            }
+                            appendActivity(
+                                RuntimePhase.Watching,
+                                "Switched to selected channel",
+                                "${previousChannel.name} → ${currentChannel.name} for ${currentCampaign.gameName}.",
+                            )
+                        }
+                    }
+                }
                 val latestSettings = settingsRepository.settings.first()
                 if (ActiveWatchGuard.shouldStopForExcludedCampaign(latestSettings, currentCampaign)) {
                     settings = latestSettings
@@ -435,15 +641,56 @@ class LocalMinerRuntime(
                     )
                 }
 
-                val watchSucceeded = sendWatch(settings, session, currentCampaign, currentChannel)
+                val watchAttempt = sendWatch(session, currentChannel)
+                when (watchAttempt) {
+                    WatchAttemptResult.Accepted -> {
+                        consecutiveRejectedWatchEvents = 0
+                        transientWatchFailures = 0
+                    }
+
+                    WatchAttemptResult.Rejected -> {
+                        transientWatchFailures = 0
+                        consecutiveRejectedWatchEvents += 1
+                        if (consecutiveRejectedWatchEvents >= RejectedWatchFailureThreshold) {
+                            failedChannelSkips[currentChannel.id] = Instant.now()
+                            updateSnapshot(
+                                RuntimePhase.Idle,
+                                "Switching away from an unhealthy channel",
+                            ) {
+                                it.copy(
+                                    channels = channels.map { channel -> channel.copy(watching = false) },
+                                    currentChannel = null,
+                                    activeCampaign = currentCampaign,
+                                    activeDrop = activeDrop,
+                                    error = null,
+                                )
+                            }
+                            appendActivity(
+                                RuntimePhase.Idle,
+                                "Channel watch events repeatedly rejected",
+                                "${currentChannel.name} rejected $consecutiveRejectedWatchEvents consecutive watch events; trying another channel.",
+                            )
+                            break
+                        }
+                    }
+
+                    is WatchAttemptResult.Failed -> {
+                        transientWatchFailures += 1
+                        consecutiveRejectedWatchEvents = 0
+                        val retryDelay = RuntimeRetryBackoff.delayFor(transientWatchFailures)
+                        updateSnapshot(RuntimePhase.Error, "Watch request failed; retrying") {
+                            it.copy(
+                                error = "${watchAttempt.message} Retrying in ${retryDelay.runtimeLabel()}.",
+                            )
+                        }
+                        delay(retryDelay.toMillis())
+                        continue
+                    }
+                }
                 val progressedCampaign = updateProgress(
                     session = session,
                     campaign = currentCampaign,
                     channel = currentChannel,
-                    fallbackBump = currentCampaign.shouldUseLocalProgressBump(
-                        settings = settings,
-                        watchSucceeded = watchSucceeded,
-                    ),
                 )
                 currentCampaign = progressedCampaign
                 campaignSnapshot = campaignSnapshot.replaceCampaign(currentCampaign)
@@ -501,13 +748,50 @@ class LocalMinerRuntime(
                             activeDrop = claimable,
                         )
                     }
-                    currentCampaign = claimDrop(settings, session, currentCampaign, claimable)
+                    currentCampaign = claimDrop(session, currentCampaign, claimable)
                     campaignSnapshot = campaignSnapshot.replaceCampaign(currentCampaign)
                 }
 
-                delay(settings.watchIntervalSeconds * 1000L)
+                withTimeoutOrNull(settings.watchIntervalSeconds * 1000L) {
+                    channelControlRequests.first { request ->
+                        request.id != handledChannelControlRequestId
+                    }
+                }
             }
         }
+    }
+
+    private suspend fun findCompatibleChannels(
+        session: StoredTwitchSession,
+        campaign: Campaign,
+        originalChannel: Channel,
+    ): CompatibleChannelSearch {
+        updateSnapshot(RuntimePhase.FindingChannel, "Checking compatible live channels") {
+            it.copy(error = null)
+        }
+        val discovered = try {
+            loadChannels(session, campaign)
+        } catch (error: ChannelDiscoveryUnavailableException) {
+            return CompatibleChannelSearch(
+                channels = listOf(originalChannel),
+                task = "Channel search failed; keeping ${originalChannel.name}",
+                detail = "Channel search failed, so ${originalChannel.name} remains active: ${error.message}",
+            )
+        }
+        val alternatives = EligibleChannelSelector.candidates(
+            channels = discovered,
+            skippedChannelIds = failedChannelSkips.keys + originalChannel.id,
+        )
+        val availableChannels = listOf(originalChannel) + alternatives
+        return CompatibleChannelSearch(
+            channels = availableChannels,
+            task = if (alternatives.isEmpty()) {
+                "No alternate channels found; keeping ${originalChannel.name}"
+            } else {
+                "Choose from ${alternatives.size} compatible alternate channels"
+            },
+            detail = "Found ${alternatives.size} alternate streamer${if (alternatives.size == 1) "" else "s"} for ${campaign.gameName}; ${originalChannel.name} remains active until a selection is made.",
+        )
     }
 
     private suspend fun claimCompletedDrops(
@@ -537,7 +821,7 @@ class LocalMinerRuntime(
                         error = null,
                     )
                 }
-                currentCampaign = claimDrop(settings, session, currentCampaign, drop)
+                currentCampaign = claimDrop(session, currentCampaign, drop)
                 updatedCampaigns = updatedCampaigns.replaceCampaign(currentCampaign)
             }
         }
@@ -561,7 +845,6 @@ class LocalMinerRuntime(
         } else if (excludedCampaignIds.isEmpty()) {
             lastLoggedExcludedCampaignIds = emptySet()
         }
-        val selectableCampaigns = unskippedCampaigns.withoutExcludedCampaigns(settings)
         val decision = CampaignPrioritySelector.initialDecision(settings, unskippedCampaigns)
         return selectFromCandidateDecision(
             settings = settings,
@@ -579,6 +862,15 @@ class LocalMinerRuntime(
             }
             .keys
         expiredCampaignIds.forEach(unlinkedNoProgressSkips::remove)
+    }
+
+    private fun pruneExpiredChannelSkips(now: Instant) {
+        val expiredChannelIds = failedChannelSkips
+            .filterValues { skippedAt ->
+                Duration.between(skippedAt, now) >= FailedChannelRetryDelay
+            }
+            .keys
+        expiredChannelIds.forEach(failedChannelSkips::remove)
     }
 
     private suspend fun appendExcludedCampaignSkips(campaigns: List<Campaign>) {
@@ -659,6 +951,7 @@ class LocalMinerRuntime(
         campaignSnapshot: List<Campaign>,
         decision: CampaignCandidateDecision.Try,
     ): SelectedCampaignWork? {
+        pruneExpiredChannelSkips(Instant.now())
         for (candidate in decision.candidates) {
             updateSnapshot(RuntimePhase.SelectingCampaign, decision.mode.selectionTask(candidate)) {
                 it.copy(
@@ -672,8 +965,11 @@ class LocalMinerRuntime(
             }
 
             updateSnapshot(RuntimePhase.FindingChannel, "Finding eligible live channels")
-            val channels = loadChannels(settings, session, candidate)
-            val selectedChannel = channels.firstOrNull { it.online && it.dropsEnabled }
+            val channels = loadChannels(session, candidate)
+            val selectedChannel = EligibleChannelSelector.select(
+                channels = channels,
+                skippedChannelIds = failedChannelSkips.keys,
+            )
             if (selectedChannel != null) {
                 return SelectedCampaignWork(candidate, selectedChannel, channels)
             }
@@ -696,33 +992,29 @@ class LocalMinerRuntime(
 
     private suspend fun loadCampaigns(
         settings: AppSettings,
-        session: StoredTwitchSession?,
+        session: StoredTwitchSession,
+        previousCampaigns: List<Campaign>,
     ): CampaignLoadResult {
-        var fetchedRealInventory = false
-        val loaded = if (session == null) {
-            emptyList()
-        } else {
-            runCatchingCancellable { twitchApiClient.fetchCampaigns(session) }
-                .onSuccess { fetchedRealInventory = true }
-                .onFailure { appendActivity(RuntimePhase.Error, "Inventory fetch failed", it.message) }
-                .getOrDefault(emptyList())
+        val loaded = try {
+            twitchApiClient.fetchCampaigns(session)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            error.throwIfInvalidToken()
+            val message = error.message ?: "Unable to load Twitch inventory."
+            appendActivity(RuntimePhase.Error, "Inventory fetch failed", message)
+            return CampaignLoadResult(
+                campaigns = previousCampaigns,
+                settings = settings,
+                failure = message,
+            )
         }
-        val campaigns = when {
-            loaded.isNotEmpty() -> loaded
-            settings.useSampleDataFallback -> {
-                appendActivity(RuntimePhase.LoadingInventory, "Using sample campaign fallback")
-                SampleTwitchData.campaigns()
-            }
-            else -> loaded
-        }
-        val shouldCleanPriority = fetchedRealInventory &&
-            (loaded.isNotEmpty() || !settings.useSampleDataFallback)
-        val effectiveSettings = if (shouldCleanPriority) {
-            cleanPrioritizedGamesWithoutCampaigns(settings, loaded)
-        } else {
+        val effectiveSettings = if (loaded.isEmpty()) {
             settings
+        } else {
+            cleanPrioritizedGamesWithoutCampaigns(settings, loaded)
         }
-        return CampaignLoadResult(campaigns, effectiveSettings)
+        return CampaignLoadResult(loaded, effectiveSettings)
     }
 
     private suspend fun cleanPrioritizedGamesWithoutCampaigns(
@@ -748,52 +1040,84 @@ class LocalMinerRuntime(
     }
 
     private suspend fun loadChannels(
-        settings: AppSettings,
         session: StoredTwitchSession,
         campaign: Campaign,
     ): List<Channel> {
-        val loaded = runCatchingCancellable {
+        return try {
             twitchApiClient.fetchEligibleChannels(session, campaign)
-        }.onFailure {
-            appendActivity(RuntimePhase.Error, "Channel discovery failed", it.message)
-        }.getOrDefault(emptyList())
-        return when {
-            loaded.isNotEmpty() -> loaded
-            settings.useSampleDataFallback && campaign.isSampleCampaign -> {
-                appendActivity(RuntimePhase.FindingChannel, "Using sample channel fallback")
-                SampleTwitchData.channels(campaign.gameName)
-            }
-            else -> loaded
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            error.throwIfInvalidToken()
+            val message = error.message ?: "Unable to discover Twitch channels."
+            appendActivity(RuntimePhase.Error, "Channel discovery failed", message)
+            throw ChannelDiscoveryUnavailableException(message, error)
+        }
+    }
+
+    fun findNewChannel() {
+        val current = _snapshot.value
+        if (
+            !current.isRunning ||
+            current.phase != RuntimePhase.Watching ||
+            current.activeCampaign == null ||
+            current.watchingChannel == null
+        ) {
+            return
+        }
+        _snapshot.update {
+            it.copy(
+                phase = RuntimePhase.FindingChannel,
+                currentTask = "Loading compatible channels",
+                channelSearchInProgress = true,
+                lastUpdate = Instant.now(),
+                error = null,
+            )
+        }
+        channelControlRequests.update { request ->
+            ChannelControlRequest(id = request.id + 1L)
+        }
+        scope.launch {
+            appendActivity(
+                RuntimePhase.FindingChannel,
+                "Compatible channel list requested",
+                "Searching for streamers compatible with ${current.activeCampaign.gameName}.",
+            )
         }
     }
 
     private suspend fun sendWatch(
-        settings: AppSettings,
         session: StoredTwitchSession,
-        campaign: Campaign,
         channel: Channel,
-    ): Boolean {
-        if (campaign.isSampleCampaign) {
-            return settings.useSampleDataFallback
-        }
+    ): WatchAttemptResult {
         if (channel.broadcastId == null) {
-            return false
+            return WatchAttemptResult.Rejected
         }
-        return runCatchingCancellable {
-            twitchApiClient.sendWatchMinute(session, channel)
-        }.onFailure {
-            appendActivity(RuntimePhase.Error, "Watch event failed", it.message)
-        }.getOrDefault(false)
+        return try {
+            if (twitchApiClient.sendWatchMinute(session, channel)) {
+                WatchAttemptResult.Accepted
+            } else {
+                WatchAttemptResult.Rejected
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            error.throwIfInvalidToken()
+            val message = error.message ?: "Twitch watch request failed."
+            appendActivity(RuntimePhase.Error, "Watch event failed", message)
+            WatchAttemptResult.Failed(message)
+        }
     }
 
     private suspend fun updateProgress(
         session: StoredTwitchSession,
         campaign: Campaign,
         channel: Channel,
-        fallbackBump: Boolean,
     ): Campaign {
         val progress = runCatchingCancellable {
             twitchApiClient.currentDrop(session, channel.id)
+        }.onFailure {
+            it.throwIfInvalidToken()
         }.getOrNull()
         if (progress != null) {
             when (val applied = campaign.applyTwitchProgress(progress)) {
@@ -809,36 +1133,15 @@ class LocalMinerRuntime(
                 }
             }
         }
-        if (!fallbackBump) {
-            return campaign
-        }
-        val drop = campaign.nextEarnableDrop() ?: return campaign
-        return campaign.updateDrop(drop.id) {
-            val current = (it.currentMinutes + 1).coerceAtMost(it.requiredMinutes)
-            it.copy(
-                currentMinutes = current,
-                progress = if (it.requiredMinutes <= 0) 0f else current.toFloat() / it.requiredMinutes,
-                canClaim = current >= it.requiredMinutes && !it.isClaimed,
-            )
-        }
+        return campaign
     }
 
     private suspend fun claimDrop(
-        settings: AppSettings,
         session: StoredTwitchSession,
         campaign: Campaign,
         drop: CampaignDrop,
     ): Campaign {
-        val result = if (settings.useSampleDataFallback && campaign.isSampleCampaign) {
-            RuntimeClaimResult(
-                outcome = RuntimeClaimOutcome.Claimed,
-                campaign = campaign,
-                drop = drop,
-                message = "Sample drop claim simulated.",
-            )
-        } else {
-            dropClaimHandler.claim(session, campaign, drop)
-        }
+        val result = dropClaimHandler.claim(session, campaign, drop)
         val updatedCampaign = if (result.isTerminalSuccess) {
             if (result.shouldCountAsNewClaim) {
                 dropsClaimedThisSession += 1
@@ -911,6 +1214,61 @@ class LocalMinerRuntime(
             campaign.copy(selected = settings.isCampaignSelected(campaign))
         }
 
+    private suspend fun awaitUsableNetwork(): Boolean {
+        if (networkStatusProvider.isOnline.value) {
+            waitingForNetwork = false
+            return false
+        }
+        if (!waitingForNetwork) {
+            waitingForNetwork = true
+            updateSnapshot(RuntimePhase.Idle, "Waiting for internet connection") {
+                it.copy(
+                    channels = it.channels.map { channel -> channel.copy(watching = false) },
+                    currentChannel = null,
+                    error = null,
+                )
+            }
+            appendActivity(
+                RuntimePhase.Idle,
+                "Internet connection unavailable",
+                "Network work is paused until Android reports a validated connection.",
+            )
+        }
+        networkStatusProvider.awaitOnline()
+        waitingForNetwork = false
+        appendActivity(RuntimePhase.Connecting, "Internet connection restored")
+        return true
+    }
+
+    private suspend fun expireTwitchSession(message: String?) {
+        updateSnapshot(RuntimePhase.Authenticating, "Stored Twitch session needs renewal") {
+            it.copy(
+                account = LoginSession(LoginState.Expired, "Twitch session expired"),
+                channels = it.channels.map { channel -> channel.copy(watching = false) },
+                currentChannel = null,
+                channelSearchInProgress = false,
+                error = message ?: "Twitch session expired",
+            )
+        }
+        appendActivity(RuntimePhase.Authenticating, "Stored Twitch session expired")
+    }
+
+    private suspend fun reportUnexpectedMinerFailure(error: Throwable) {
+        updateSnapshot(RuntimePhase.Error, "Local miner stopped after an unexpected error") {
+            it.copy(
+                channels = it.channels.map { channel -> channel.copy(watching = false) },
+                currentChannel = null,
+                channelSearchInProgress = false,
+                error = error.message ?: "Unexpected local miner failure.",
+            )
+        }
+        appendActivity(
+            RuntimePhase.Error,
+            "Local miner stopped after unexpected error",
+            error.message,
+        )
+    }
+
     private suspend fun updateSnapshot(
         phase: RuntimePhase,
         task: String,
@@ -950,7 +1308,7 @@ private fun Campaign.nextEarnableDrop(): CampaignDrop? {
 }
 
 private fun Campaign.startUnlinkedProgressProbe(settings: AppSettings): UnlinkedProgressProbe? =
-    if (canTryUnlinkedLocally && !isSampleCampaign) {
+    if (canTryUnlinkedLocally) {
         UnlinkedProgressProbe.start(this, settings, Instant.now())
     } else {
         null
@@ -966,18 +1324,6 @@ private fun Campaign.watchingTask(
 
         canTryUnlinkedLocally -> "Watching unlinked game on ${channel.name}"
         else -> "Watching ${channel.name}"
-    }
-
-internal fun Campaign.shouldUseLocalProgressBump(
-    settings: AppSettings,
-    watchSucceeded: Boolean,
-): Boolean =
-    when {
-        // Real (non-sample) unlinked campaigns never get synthetic progress bumps; their
-        // progress must come from Twitch so the unlinked probe can decide whether to keep going.
-        canTryUnlinkedLocally && !isSampleCampaign -> false
-        isSampleCampaign -> settings.useSampleDataFallback
-        else -> watchSucceeded
     }
 
 internal sealed class TwitchProgressUpdate {
@@ -996,11 +1342,13 @@ internal fun Campaign.applyTwitchProgress(progress: CurrentDropProgress): Twitch
     }
     return TwitchProgressUpdate.Updated(
         updateDrop(progress.dropId) { drop ->
-            val current = progress.currentMinutes.coerceAtMost(drop.requiredMinutes)
+            val required = drop.requiredMinutes.coerceAtLeast(0)
+            val reported = progress.currentMinutes.coerceIn(0, required)
+            val current = maxOf(drop.currentMinutes.coerceIn(0, required), reported)
             drop.copy(
                 currentMinutes = current,
-                progress = if (drop.requiredMinutes <= 0) 0f else current.toFloat() / drop.requiredMinutes,
-                canClaim = current >= drop.requiredMinutes && !drop.isClaimed,
+                progress = if (required == 0) 0f else current.toFloat() / required,
+                canClaim = required > 0 && current >= required && !drop.isClaimed,
             )
         },
     )
@@ -1510,16 +1858,78 @@ private data class SelectedCampaignWork(
     val channels: List<Channel>,
 )
 
+private data class CompatibleChannelSearch(
+    val channels: List<Channel>,
+    val task: String,
+    val detail: String,
+)
+
+private data class ChannelControlRequest(
+    val id: Long = 0L,
+    val selectedChannelId: Long? = null,
+)
+
 private data class CampaignLoadResult(
     val campaigns: List<Campaign>,
     val settings: AppSettings,
+    val failure: String? = null,
 )
+
+private sealed interface WatchAttemptResult {
+    data object Accepted : WatchAttemptResult
+    data object Rejected : WatchAttemptResult
+    data class Failed(val message: String) : WatchAttemptResult
+}
+
+private class ChannelDiscoveryUnavailableException(
+    message: String,
+    cause: Throwable,
+) : IllegalStateException(message, cause)
+
+internal object EligibleChannelSelector {
+    fun select(channels: List<Channel>, skippedChannelIds: Set<Long>): Channel? =
+        candidates(channels, skippedChannelIds).firstOrNull()
+
+    fun candidates(channels: List<Channel>, skippedChannelIds: Set<Long>): List<Channel> =
+        channels
+            .asSequence()
+            .filter { channel ->
+                channel.online &&
+                    channel.dropsEnabled &&
+                    channel.id > 0L &&
+                    !channel.broadcastId.isNullOrBlank() &&
+                    channel.id !in skippedChannelIds
+            }
+            .sortedWith(
+                compareByDescending<Channel> { it.aclBased }
+                    .thenByDescending { it.viewers ?: -1 }
+                    .thenBy(String.CASE_INSENSITIVE_ORDER) { it.name },
+            )
+            .toList()
+}
+
+internal object ChannelPickerSelection {
+    fun findCompatibleChannel(
+        channels: List<Channel>,
+        channelId: Long,
+    ): Channel? = EligibleChannelSelector.candidates(
+        channels = channels,
+        skippedChannelIds = emptySet(),
+    ).firstOrNull { channel -> channel.id == channelId }
+}
+
+internal object RuntimeRetryBackoff {
+    private val MaxDelay: Duration = Duration.ofMinutes(5)
+
+    fun delayFor(consecutiveFailures: Int): Duration {
+        val exponent = (consecutiveFailures.coerceAtLeast(1) - 1).coerceAtMost(5)
+        val seconds = 15L shl exponent
+        return Duration.ofSeconds(seconds).coerceAtMost(MaxDelay)
+    }
+}
 
 private val Campaign.isLocallyComplete: Boolean
     get() = drops.isNotEmpty() && drops.all { drop -> drop.isClaimed }
-
-private val Campaign.isSampleCampaign: Boolean
-    get() = id.startsWith("sample-")
 
 private val Campaign.unlinkedProbeMinutes: Int
     get() = drops.sumOf { it.currentMinutes.coerceAtLeast(0) }
@@ -1568,6 +1978,9 @@ private fun Campaign.updateDrop(
 private fun List<Campaign>.replaceCampaign(campaign: Campaign): List<Campaign> =
     map { existing -> if (existing.id == campaign.id) campaign else existing }
 
+private fun List<Channel>.markWatching(channelId: Long): List<Channel> =
+    map { channel -> channel.copy(watching = channel.id == channelId) }
+
 private fun List<Campaign>.progressSummary(): String {
     if (isEmpty()) {
         return "No campaign data"
@@ -1615,3 +2028,9 @@ private suspend inline fun <T> runCatchingCancellable(
     } catch (error: Throwable) {
         Result.failure(error)
     }
+
+private fun Throwable.throwIfInvalidToken() {
+    if (this is TwitchApiException && type == TwitchApiErrorType.InvalidToken) {
+        throw this
+    }
+}

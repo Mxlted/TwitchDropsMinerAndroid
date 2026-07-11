@@ -1,12 +1,10 @@
 package com.nathan.twitchdropsminer.android
 
-import com.nathan.twitchdropsminer.android.data.model.AppSettings
 import com.nathan.twitchdropsminer.android.data.model.Campaign
 import com.nathan.twitchdropsminer.android.data.model.CampaignDrop
 import com.nathan.twitchdropsminer.android.data.twitch.CurrentDropProgress
 import com.nathan.twitchdropsminer.android.runtime.TwitchProgressUpdate
 import com.nathan.twitchdropsminer.android.runtime.applyTwitchProgress
-import com.nathan.twitchdropsminer.android.runtime.shouldUseLocalProgressBump
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -55,36 +53,22 @@ class RuntimeProgressTest {
     }
 
     @Test
-    fun realUnlinkedCampaignsNeverGetSyntheticProgressBumps() {
-        val unlinked = linkedCampaign("campaign-1", "Game").copy(
-            linked = false,
-            linkStatusKnown = true,
-            linkUrl = "https://example.test/link",
+    fun delayedTwitchProgressDoesNotRegressCurrentSessionMinutes() {
+        val campaign = linkedCampaign(
+            "campaign-1",
+            "Game",
+            currentMinutes = 20,
+            requiredMinutes = 60,
         )
-        val settings = AppSettings(allowWatchingUnlinkedGames = true).normalized()
 
-        // Even when the watch event "succeeded", an unlinked (non-sample) campaign must not bump.
-        assertEquals(false, unlinked.shouldUseLocalProgressBump(settings, watchSucceeded = true))
+        val result = campaign.applyTwitchProgress(
+            CurrentDropProgress(dropId = "campaign-1-drop", currentMinutes = 12),
+        )
+
+        val updated = result as TwitchProgressUpdate.Updated
+        assertEquals(20, updated.campaign.drops.first().currentMinutes)
     }
 
-    @Test
-    fun linkedCampaignsBumpOnlyWhenWatchSucceeded() {
-        val linked = linkedCampaign("campaign-1", "Game")
-        val settings = AppSettings().normalized()
-
-        assertEquals(true, linked.shouldUseLocalProgressBump(settings, watchSucceeded = true))
-        assertEquals(false, linked.shouldUseLocalProgressBump(settings, watchSucceeded = false))
-    }
-
-    @Test
-    fun sampleCampaignsBumpOnlyWhenSampleFallbackEnabled() {
-        val sample = linkedCampaign("sample-1", "Sample Game")
-        val withSample = AppSettings(useSampleDataFallback = true).normalized()
-        val withoutSample = AppSettings(useSampleDataFallback = false).normalized()
-
-        assertEquals(true, sample.shouldUseLocalProgressBump(withSample, watchSucceeded = false))
-        assertEquals(false, sample.shouldUseLocalProgressBump(withoutSample, watchSucceeded = true))
-    }
 }
 
 private fun linkedCampaign(

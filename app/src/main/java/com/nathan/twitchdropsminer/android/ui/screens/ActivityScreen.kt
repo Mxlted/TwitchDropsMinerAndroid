@@ -77,7 +77,10 @@ fun ActivityScreen(snapshot: RuntimeSnapshot) {
                 jumpLabel = "Jump to latest",
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                items(visibleActivity) { entry ->
+                items(
+                    items = visibleActivity,
+                    key = { entry -> "${entry.timestamp}-${entry.state}-${entry.title}" },
+                ) { entry ->
                     RuntimeActivityLine(entry)
                 }
             }

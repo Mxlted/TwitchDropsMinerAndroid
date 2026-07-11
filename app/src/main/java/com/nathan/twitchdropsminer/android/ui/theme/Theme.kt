@@ -7,9 +7,9 @@ import androidx.compose.ui.graphics.Color
 
 private val DarkScheme = darkColorScheme(
     primary = AppAccent,
-    onPrimary = Color(0xFF00251B),
+    onPrimary = Color(0xFF211132),
     secondary = AppAccentAlt,
-    onSecondary = Color(0xFF06182B),
+    onSecondary = Color(0xFF061A26),
     tertiary = AppWarning,
     onTertiary = Color(0xFF261B00),
     background = AppBackground,
@@ -19,7 +19,7 @@ private val DarkScheme = darkColorScheme(
     surfaceVariant = AppSurfaceHigh,
     onSurfaceVariant = AppMuted,
     error = AppError,
-    onError = Color(0xFF2B0000),
+    onError = Color(0xFF310006),
 )
 
 @Composable

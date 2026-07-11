@@ -1,16 +1,15 @@
 package com.nathan.twitchdropsminer.android.data.twitch
 
-import android.util.Base64
 import com.nathan.twitchdropsminer.android.data.model.Campaign
 import com.nathan.twitchdropsminer.android.data.model.CampaignDrop
 import com.nathan.twitchdropsminer.android.data.model.Channel
 import com.nathan.twitchdropsminer.android.data.model.DropReward
 import com.nathan.twitchdropsminer.android.data.model.StoredTwitchSession
-import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.time.Instant
+import java.util.Base64
 import java.util.UUID
-import java.util.zip.GZIPOutputStream
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -36,6 +35,8 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 private const val TwitchClientId = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp"
 private const val TwitchClientUrl = "https://www.twitch.tv"
@@ -123,11 +124,13 @@ interface TwitchApi {
 class TwitchApiClient(
     private val okHttpClient: OkHttpClient,
     private val gqlEndpoint: String = "https://gql.twitch.tv/gql",
+    private val twitchWebBaseUrl: String = TwitchClientUrl,
 ) : TwitchApi {
     private val json = Json {
         ignoreUnknownKeys = true
         explicitNulls = false
     }
+    private val spadeUrls = ConcurrentHashMap<Long, String>()
 
     override suspend fun requestDeviceCode(deviceId: String): DeviceAuthorization =
         withContext(Dispatchers.IO) {
@@ -191,14 +194,29 @@ class TwitchApiClient(
                 .header("Authorization", "OAuth $accessToken")
                 .get()
                 .build()
-            okHttpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
+            val response = try {
+                okHttpClient.newCall(request).execute()
+            } catch (error: IOException) {
+                throw TwitchApiException(
+                    TwitchApiErrorType.Network,
+                    "Twitch session validation failed: ${error.message ?: "network unavailable"}",
+                    error,
+                )
+            }
+            response.use {
+                if (it.code == 401 || it.code == 403) {
                     throw TwitchApiException(
                         TwitchApiErrorType.InvalidToken,
                         "Twitch session expired or could not be validated.",
                     )
                 }
-                val root = response.body?.string()?.asObject()
+                if (!it.isSuccessful) {
+                    throw TwitchApiException(
+                        TwitchApiErrorType.Http,
+                        "Twitch session validation failed: HTTP ${it.code}.",
+                    )
+                }
+                val root = it.body?.string()?.asObject()
                     ?: throw IllegalStateException("Twitch validation returned no body")
                 ValidatedToken(
                     userId = root["user_id"].asString(),
@@ -260,7 +278,7 @@ class TwitchApiClient(
                     },
                 ),
             ).path("data", "user")["dropCampaign"].asObjectOrNull()
-        }.getOrNull()
+        }.getOrNullUnlessInvalidToken()
     }
 
     override suspend fun fetchEligibleChannels(
@@ -274,11 +292,16 @@ class TwitchApiClient(
         if (allowedChannels.isNotEmpty()) {
             // Campaign ACL membership is the strongest eligibility signal Twitch exposes here.
             // Bound the live checks so large allow-lists do not become slow channel scans.
-            return allowedChannels.mapNotNull { channel ->
+            val attempts = allowedChannels.map { channel ->
                 runCatchingCancellable {
                     fetchChannel(session, channel.name, campaign.gameName)
-                }.getOrNull()
-            }.filter { it.online && it.dropsEnabled }
+                }
+            }
+            val resolved = attempts.mapNotNull { it.getOrNullUnlessInvalidToken() }
+            if (resolved.isEmpty() && attempts.all { it.isFailure }) {
+                throw attempts.firstNotNullOf { it.exceptionOrNull() }
+            }
+            return resolved.filter { it.online && it.dropsEnabled }
         }
 
         val slugResponse = gql(
@@ -363,23 +386,42 @@ class TwitchApiClient(
     override suspend fun sendWatchMinute(
         session: StoredTwitchSession,
         channel: Channel,
-    ): Boolean {
-        val encodedPayload = encodeWatchPayload(session, channel)
-        val query = buildJsonObject {
-            put(
-                "query",
-                "\n mutation SendEvents(\$input: SendSpadeEventsInput!) {\n sendSpadeEvents(input: \$input) {\n statusCode\n}\n}\n",
+    ): Boolean = withContext(Dispatchers.IO) {
+        val broadcastId = channel.broadcastId?.takeIf { it.isNotBlank() }
+            ?: return@withContext false
+        val userId = session.userId.toLongOrNull()
+            ?: return@withContext false
+        val spadeUrl = spadeUrls[channel.id]
+            ?: resolveSpadeUrl(session, channel)?.also { spadeUrls[channel.id] = it }
+            ?: return@withContext false
+        val encodedPayload = encodeWatchPayload(
+            userId = userId,
+            channel = channel,
+            broadcastId = broadcastId,
+        )
+        val request = Request.Builder()
+            .url(spadeUrl)
+            .headers(sessionHeaders(session))
+            .post(FormBody.Builder().add("data", encodedPayload).build())
+            .build()
+        val response = try {
+            okHttpClient.newCall(request).execute()
+        } catch (error: IOException) {
+            throw TwitchApiException(
+                TwitchApiErrorType.Network,
+                "Twitch watch-event network failure: ${error.message ?: "network unavailable"}",
+                error,
             )
-            putJsonObject("variables") {
-                putJsonObject("input") {
-                    put("data", encodedPayload)
-                    put("repository", "twilight")
-                    put("encoding", "GZIP_B64")
-                }
-            }
         }
-        val response = gql(session, query)
-        return response.path("data", "sendSpadeEvents")["statusCode"].asInt(0) == 204
+        response.use {
+            if (it.code == 401 || it.code == 403) {
+                throw TwitchApiException(
+                    TwitchApiErrorType.InvalidToken,
+                    "Twitch session expired or is not authorized to report watch activity.",
+                )
+            }
+            it.code == 204
+        }
     }
 
     override suspend fun currentDrop(
@@ -545,15 +587,16 @@ class TwitchApiClient(
             .build()
 
     private fun encodeWatchPayload(
-        session: StoredTwitchSession,
+        userId: Long,
         channel: Channel,
+        broadcastId: String,
     ): String {
         val payload = buildJsonArray {
             add(
                 buildJsonObject {
                     put("event", "minute-watched")
                     putJsonObject("properties") {
-                        put("broadcast_id", channel.broadcastId.orEmpty())
+                        put("broadcast_id", broadcastId)
                         put("channel_id", channel.id.toString())
                         put("channel", channel.name)
                         put("client_time", Instant.now().toString())
@@ -562,22 +605,89 @@ class TwitchApiClient(
                         put("hidden", false)
                         put("is_live", true)
                         put("live", true)
+                        put("location", "channel")
                         put("logged_in", true)
                         put("minutes_logged", 1)
                         put("muted", false)
-                        put("user_id", session.userId)
+                        put("player", "site")
+                        put("user_id", userId)
                     }
                 },
             )
         }.toString()
-        val bytes = ByteArrayOutputStream()
-        GZIPOutputStream(bytes).use { it.write(payload.toByteArray(Charsets.UTF_8)) }
-        return Base64.encodeToString(bytes.toByteArray(), Base64.NO_WRAP)
+        return Base64.getEncoder().encodeToString(payload.toByteArray(Charsets.UTF_8))
+    }
+
+    private fun resolveSpadeUrl(
+        session: StoredTwitchSession,
+        channel: Channel,
+    ): String? {
+        val channelUrl = twitchWebBaseUrl.toHttpUrl().newBuilder()
+            .addPathSegment(channel.name)
+            .build()
+        val channelHtml = getWatchConfiguration(session, channelUrl.toString())
+        SpadeUrlPattern.find(channelHtml)?.groupValues?.get(1)?.let { candidate ->
+            return candidate.takeIf(::isAllowedWatchConfigurationUrl)
+        }
+        val settingsUrl = SettingsUrlPattern.find(channelHtml)?.groupValues?.get(1)
+            ?.takeIf(::isAllowedWatchConfigurationUrl)
+            ?: return null
+        val settings = getWatchConfiguration(session, settingsUrl)
+        return SpadeUrlPattern.find(settings)?.groupValues?.get(1)
+            ?.takeIf(::isAllowedWatchConfigurationUrl)
+    }
+
+    private fun getWatchConfiguration(
+        session: StoredTwitchSession,
+        url: String,
+    ): String {
+        val request = Request.Builder()
+            .url(url)
+            .headers(sessionHeaders(session))
+            .get()
+            .build()
+        val response = try {
+            okHttpClient.newCall(request).execute()
+        } catch (error: IOException) {
+            throw TwitchApiException(
+                TwitchApiErrorType.Network,
+                "Twitch watch configuration failed: ${error.message ?: "network unavailable"}",
+                error,
+            )
+        }
+        return response.use {
+            if (it.code == 401 || it.code == 403) {
+                throw TwitchApiException(
+                    TwitchApiErrorType.InvalidToken,
+                    "Twitch session expired while loading watch configuration.",
+                )
+            }
+            if (!it.isSuccessful) {
+                throw TwitchApiException(
+                    TwitchApiErrorType.Http,
+                    "Twitch watch configuration failed: HTTP ${it.code}.",
+                )
+            }
+            it.body?.string().orEmpty()
+        }
+    }
+
+    private fun isAllowedWatchConfigurationUrl(candidate: String): Boolean {
+        val url = candidate.toHttpUrlOrNull() ?: return false
+        if (url.isHttps) return true
+        return url.host == "localhost" || url.host == "127.0.0.1" || url.host == "::1"
     }
 
     private fun String.asObject(): JsonObject =
         json.parseToJsonElement(this).jsonObject
 }
+
+private val SpadeUrlPattern =
+    Regex("\\\"beacon_?url\\\"\\s*:\\s*\\\"(https?://[^\\\"]+)\\\"", RegexOption.IGNORE_CASE)
+private val SettingsUrlPattern = Regex(
+    "src=[\\\"'](https?://[^\\\"']+/config/settings\\.[0-9a-f]{32}\\.js)[\\\"']",
+    RegexOption.IGNORE_CASE,
+)
 
 internal object TwitchCampaignMapper {
     fun campaignFromJson(
@@ -831,3 +941,14 @@ private suspend inline fun <T> runCatchingCancellable(
     } catch (error: Throwable) {
         Result.failure(error)
     }
+
+private fun <T> Result<T>.getOrNullUnlessInvalidToken(): T? =
+    fold(
+        onSuccess = { it },
+        onFailure = { error ->
+            if (error is TwitchApiException && error.type == TwitchApiErrorType.InvalidToken) {
+                throw error
+            }
+            null
+        },
+    )

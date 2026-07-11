@@ -13,7 +13,6 @@ data class AppSettings(
     val inventoryRefreshMinutes: Int = DefaultInventoryRefreshMinutes,
     val runInForeground: Boolean = true,
     val keepActiveScreenMode: Boolean = false,
-    val useSampleDataFallback: Boolean = false,
     val fallbackToAutoWhenPrioritizedComplete: Boolean = false,
     val fallbackToAutoWhenNoPrioritizedChannel: Boolean = false,
     val allowWatchingUnlinkedGames: Boolean = false,
@@ -23,14 +22,12 @@ data class AppSettings(
     // Legacy unordered game set. selectedGamePriority is the source of truth.
     val selectedGames: Set<String> = emptySet(),
     val selectedGamePriority: List<String> = emptyList(),
-    val batteryHelpDismissed: Boolean = false,
     val debugLogging: Boolean = false,
     val advancedBackendMode: Boolean = false,
     val backendUrl: String = "",
     // Kept for compatibility with the optional backend/debug helpers and older tests.
     val pollIntervalSeconds: Int = DefaultWatchIntervalSeconds,
     val monitorInForeground: Boolean = true,
-    val sampleMode: Boolean = false,
 ) {
     val normalizedBackendUrl: String
         get() = backendUrl.trim().trimEnd('/')
@@ -98,7 +95,6 @@ data class AppSettings(
                 MaxInventoryRefreshMinutes * 60,
             ),
             monitorInForeground = runInForeground,
-            sampleMode = useSampleDataFallback,
         )
     }
 }

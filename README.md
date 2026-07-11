@@ -14,8 +14,13 @@ It is intended as a mobile Android alternative to desktop Twitch Drops mining to
 * Optional unlinked-game watching with progress checks
 * Foreground service for active mining
 * Persistent notification while mining is running
+* Validated-network detection with pause-and-resume recovery
+* Bounded retry backoff and failed-channel failover
+* On-demand compatible-channel picker with explicit streamer selection
 * Activity and log screens
 * Local logs with copy and clear actions
+* Adaptive bottom navigation and tablet navigation rail
+* Direct priority reordering and campaign exclusion controls
 * Keep active screen mode for long sessions
 * Secure local session storage
 * Completed drop claim attempts from the app
@@ -83,7 +88,9 @@ You can also install and run the app directly from Android Studio.
 
 ## How It Works
 
-The app signs in with Twitch using device-code login. It then loads Drops campaign data, checks for eligible drops, follows the selected game priority order, looks for eligible live channels, and keeps watch activity active while mining is running.
+The app signs in with Twitch using device-code login. It then loads Drops campaign data, checks for eligible drops, follows the selected game priority order, ranks eligible live channels, and keeps watch activity active while mining is running. Watch minutes are reported directly to Twitch's discovered Spade endpoint with the stream attribution fields Twitch currently requires; progress is still accepted only when Twitch reports it. Offline work pauses until Android reports a validated network; transient Twitch failures retry with bounded backoff.
+
+While actively watching, **Find New Channel** on the Dashboard opens a popup, refreshes compatible Drops-enabled streamers for the current campaign, and lets the user choose one. The current streamer remains active while the list is open and when no alternative is available.
 
 When a drop is complete, the app attempts to claim it from the Android runtime. Claim results are shown in the app's activity and logs.
 
@@ -114,7 +121,6 @@ This mode uses more battery and should only be enabled when needed.
 * Websocket progress updates are not fully ported yet.
 * Claim behavior still needs more live testing with real completed claimable drops.
 * Unlinked-game watching is optional and stops trying a game when Twitch progress does not increase.
-* Optional sample data is only for testing and does not represent live Twitch campaign state.
 
 ## Security
 

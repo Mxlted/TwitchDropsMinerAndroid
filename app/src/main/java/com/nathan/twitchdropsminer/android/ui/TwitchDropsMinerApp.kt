@@ -9,11 +9,15 @@ import androidx.annotation.DrawableRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -21,6 +25,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -28,6 +33,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.unit.dp
 import com.nathan.twitchdropsminer.android.R
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -52,13 +58,15 @@ enum class MainDestination(val label: String, @param:DrawableRes val iconResId: 
 fun TwitchDropsMinerApp(
     uiState: AppUiState,
     onCompleteOnboarding: () -> Unit,
-    onEnableSampleMode: () -> Unit,
     onStartLogin: () -> Unit,
     onOpenActivation: (String) -> Unit,
     onRefresh: () -> Unit,
     onStartMining: () -> Unit,
     onStopMining: () -> Unit,
+    onFindNewChannel: () -> Unit,
+    onSelectChannel: (Long) -> Unit,
     onToggleGamePriority: (String) -> Unit,
+    onMoveGamePriority: (String, Int) -> Unit,
     onSetGamePriority: (String, Int) -> Unit,
     onClearGamePriority: () -> Unit,
     onSetCampaignExclusion: (Set<String>, Boolean) -> Unit,
@@ -69,7 +77,6 @@ fun TwitchDropsMinerApp(
     onKeepActiveScreenModeChanged: (Boolean) -> Unit,
     onEnterDimScreen: () -> Unit,
     onExitDimScreen: () -> Unit,
-    onSampleFallbackChanged: (Boolean) -> Unit,
     onFallbackToAutoWhenPrioritizedCompleteChanged: (Boolean) -> Unit,
     onFallbackToAutoWhenNoPrioritizedChannelChanged: (Boolean) -> Unit,
     onAllowWatchingUnlinkedGamesChanged: (Boolean) -> Unit,
@@ -88,10 +95,7 @@ fun TwitchDropsMinerApp(
             uiState.dimScreenActive -> KeepActiveBlackScreen(onExit = onExitDimScreen)
 
             !uiState.settings.hasCompletedOnboarding -> {
-                OnboardingScreen(
-                    onContinue = onCompleteOnboarding,
-                    onEnableSampleMode = onEnableSampleMode,
-                )
+                OnboardingScreen(onContinue = onCompleteOnboarding)
             }
 
             else -> {
@@ -102,7 +106,10 @@ fun TwitchDropsMinerApp(
                     onRefresh = onRefresh,
                     onStartMining = onStartMining,
                     onStopMining = onStopMining,
+                    onFindNewChannel = onFindNewChannel,
+                    onSelectChannel = onSelectChannel,
                     onToggleGamePriority = onToggleGamePriority,
+                    onMoveGamePriority = onMoveGamePriority,
                     onSetGamePriority = onSetGamePriority,
                     onClearGamePriority = onClearGamePriority,
                     onSetCampaignExclusion = onSetCampaignExclusion,
@@ -112,7 +119,6 @@ fun TwitchDropsMinerApp(
                     onInventoryRefreshChanged = onInventoryRefreshChanged,
                     onKeepActiveScreenModeChanged = onKeepActiveScreenModeChanged,
                     onEnterDimScreen = onEnterDimScreen,
-                    onSampleFallbackChanged = onSampleFallbackChanged,
                     onFallbackToAutoWhenPrioritizedCompleteChanged =
                         onFallbackToAutoWhenPrioritizedCompleteChanged,
                     onFallbackToAutoWhenNoPrioritizedChannelChanged =
@@ -137,7 +143,10 @@ private fun MainScaffold(
     onRefresh: () -> Unit,
     onStartMining: () -> Unit,
     onStopMining: () -> Unit,
+    onFindNewChannel: () -> Unit,
+    onSelectChannel: (Long) -> Unit,
     onToggleGamePriority: (String) -> Unit,
+    onMoveGamePriority: (String, Int) -> Unit,
     onSetGamePriority: (String, Int) -> Unit,
     onClearGamePriority: () -> Unit,
     onSetCampaignExclusion: (Set<String>, Boolean) -> Unit,
@@ -147,7 +156,6 @@ private fun MainScaffold(
     onInventoryRefreshChanged: (Int) -> Unit,
     onKeepActiveScreenModeChanged: (Boolean) -> Unit,
     onEnterDimScreen: () -> Unit,
-    onSampleFallbackChanged: (Boolean) -> Unit,
     onFallbackToAutoWhenPrioritizedCompleteChanged: (Boolean) -> Unit,
     onFallbackToAutoWhenNoPrioritizedChannelChanged: (Boolean) -> Unit,
     onAllowWatchingUnlinkedGamesChanged: (Boolean) -> Unit,
@@ -158,27 +166,12 @@ private fun MainScaffold(
     onResetSession: () -> Unit,
 ) {
     var destination by rememberSaveable { mutableStateOf(MainDestination.Dashboard) }
-
-    Scaffold(
-        bottomBar = {
-            NavigationBar {
-                MainDestination.entries.forEach { item ->
-                    NavigationBarItem(
-                        selected = destination == item,
-                        onClick = { destination = item },
-                        icon = {
-                            Icon(
-                                painter = painterResource(item.iconResId),
-                                contentDescription = item.label,
-                            )
-                        },
-                        label = { Text(item.label) },
-                    )
-                }
-            }
-        },
-    ) { padding ->
-        Box(modifier = Modifier.padding(padding)) {
+    val stateHolder = rememberSaveableStateHolder()
+    BackHandler(enabled = destination != MainDestination.Dashboard) {
+        destination = MainDestination.Dashboard
+    }
+    val content: @Composable () -> Unit = {
+        stateHolder.SaveableStateProvider(destination.name) {
             when (destination) {
                 MainDestination.Dashboard -> DashboardScreen(
                     settings = uiState.settings,
@@ -189,6 +182,8 @@ private fun MainScaffold(
                     onRefresh = onRefresh,
                     onStartMining = onStartMining,
                     onStopMining = onStopMining,
+                    onFindNewChannel = onFindNewChannel,
+                    onSelectChannel = onSelectChannel,
                     onEnterDimScreen = onEnterDimScreen,
                 )
 
@@ -196,6 +191,7 @@ private fun MainScaffold(
                     settings = uiState.settings,
                     snapshot = uiState.snapshot,
                     onToggleGamePriority = onToggleGamePriority,
+                    onMoveGamePriority = onMoveGamePriority,
                     onSetGamePriority = onSetGamePriority,
                     onClearPriority = onClearGamePriority,
                     onSetCampaignExclusion = onSetCampaignExclusion,
@@ -211,11 +207,11 @@ private fun MainScaffold(
 
                 MainDestination.Settings -> SettingsScreen(
                     settings = uiState.settings,
+                    miningActive = uiState.snapshot.isRunning,
                     onRunInForegroundChanged = onRunInForegroundChanged,
                     onWatchIntervalChanged = onWatchIntervalChanged,
                     onInventoryRefreshChanged = onInventoryRefreshChanged,
                     onKeepActiveScreenModeChanged = onKeepActiveScreenModeChanged,
-                    onSampleFallbackChanged = onSampleFallbackChanged,
                     onFallbackToAutoWhenPrioritizedCompleteChanged =
                         onFallbackToAutoWhenPrioritizedCompleteChanged,
                     onFallbackToAutoWhenNoPrioritizedChannelChanged =
@@ -227,6 +223,55 @@ private fun MainScaffold(
                     onOpenBatterySettings = onOpenBatterySettings,
                     onResetSession = onResetSession,
                 )
+            }
+        }
+    }
+
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        if (maxWidth >= 720.dp) {
+            Row(modifier = Modifier.fillMaxSize()) {
+                NavigationRail {
+                    MainDestination.entries.forEach { item ->
+                        NavigationRailItem(
+                            selected = destination == item,
+                            onClick = { destination = item },
+                            icon = {
+                                Icon(
+                                    painter = painterResource(item.iconResId),
+                                    contentDescription = null,
+                                )
+                            },
+                            label = { Text(item.label) },
+                        )
+                    }
+                }
+                Box(modifier = Modifier.weight(1f).fillMaxSize()) {
+                    content()
+                }
+            }
+        } else {
+            Scaffold(
+                bottomBar = {
+                    NavigationBar {
+                        MainDestination.entries.forEach { item ->
+                            NavigationBarItem(
+                                selected = destination == item,
+                                onClick = { destination = item },
+                                icon = {
+                                    Icon(
+                                        painter = painterResource(item.iconResId),
+                                        contentDescription = null,
+                                    )
+                                },
+                                label = { Text(item.label) },
+                            )
+                        }
+                    }
+                },
+            ) { padding ->
+                Box(modifier = Modifier.padding(padding).fillMaxSize()) {
+                    content()
+                }
             }
         }
     }

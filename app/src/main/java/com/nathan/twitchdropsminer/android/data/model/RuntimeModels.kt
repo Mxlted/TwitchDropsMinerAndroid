@@ -31,18 +31,12 @@ data class RuntimeSnapshot(
     val activeCampaign: Campaign? = null,
     val activeDrop: CampaignDrop? = null,
     val dropsClaimedThisSession: Int = 0,
+    val miningActive: Boolean = false,
+    val channelSearchInProgress: Boolean = false,
     val error: String? = null,
 ) {
     val isRunning: Boolean
-        get() = phase in setOf(
-            RuntimePhase.Authenticating,
-            RuntimePhase.LoadingInventory,
-            RuntimePhase.SelectingCampaign,
-            RuntimePhase.FindingChannel,
-            RuntimePhase.Watching,
-            RuntimePhase.Claiming,
-            RuntimePhase.Fetching,
-        )
+        get() = miningActive
 
     val activeCampaignCount: Int
         get() = campaigns.count { it.active }

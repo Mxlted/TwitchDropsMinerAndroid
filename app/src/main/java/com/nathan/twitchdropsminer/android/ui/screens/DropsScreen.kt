@@ -52,11 +52,12 @@ fun DropsScreen(
     settings: AppSettings,
     snapshot: RuntimeSnapshot,
     onToggleGamePriority: (String) -> Unit,
+    onMoveGamePriority: (String, Int) -> Unit,
     onSetGamePriority: (String, Int) -> Unit,
     onClearPriority: () -> Unit,
     onSetCampaignExclusion: (Set<String>, Boolean) -> Unit,
 ) {
-    var query by remember { mutableStateOf("") }
+    var query by rememberSaveable { mutableStateOf("") }
     var compactView by rememberSaveable { mutableStateOf(false) }
     var gamesLinkFilter by rememberSaveable { mutableStateOf(GamesLinkFilter.All) }
     var currentView by rememberSaveable {
@@ -178,6 +179,7 @@ fun DropsScreen(
                             density = density,
                             mode = GameCardMode.EditPriorityOnTap,
                             onToggleGamePriority = onToggleGamePriority,
+                            onMoveGamePriority = onMoveGamePriority,
                             onSetGamePriority = onSetGamePriority,
                             onSetCampaignExclusion = onSetCampaignExclusion,
                         )
@@ -216,6 +218,7 @@ fun DropsScreen(
                                 density = density,
                                 mode = GameCardMode.AddPriorityButton,
                                 onToggleGamePriority = onToggleGamePriority,
+                                onMoveGamePriority = onMoveGamePriority,
                                 onSetGamePriority = onSetGamePriority,
                                 onSetCampaignExclusion = onSetCampaignExclusion,
                             )
@@ -260,6 +263,7 @@ fun DropsScreen(
                             density = density,
                             mode = GameCardMode.Excluded,
                             onToggleGamePriority = onToggleGamePriority,
+                            onMoveGamePriority = onMoveGamePriority,
                             onSetGamePriority = onSetGamePriority,
                             onSetCampaignExclusion = onSetCampaignExclusion,
                         )
@@ -421,6 +425,7 @@ private fun GameCampaignCard(
     density: CampaignCardDensity,
     mode: GameCardMode,
     onToggleGamePriority: (String) -> Unit,
+    onMoveGamePriority: (String, Int) -> Unit,
     onSetGamePriority: (String, Int) -> Unit,
     onSetCampaignExclusion: (Set<String>, Boolean) -> Unit,
 ) {
@@ -448,7 +453,7 @@ private fun GameCampaignCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = AppSurfaceHigh),
-        shape = RoundedCornerShape(8.dp),
+        shape = RoundedCornerShape(14.dp),
     ) {
         Column(
             modifier = Modifier.padding(if (compact) 10.dp else 12.dp),
@@ -523,6 +528,25 @@ private fun GameCampaignCard(
                 }
 
                 GameCardMode.EditPriorityOnTap -> {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        OutlinedButton(
+                            onClick = { onMoveGamePriority(summary.gameName, -1) },
+                            enabled = priorityIndex != null && priorityIndex > 0,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text("Move Earlier")
+                        }
+                        OutlinedButton(
+                            onClick = { onMoveGamePriority(summary.gameName, 1) },
+                            enabled = priorityIndex != null && priorityIndex < selectedCount - 1,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text("Move Later")
+                        }
+                    }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -674,7 +698,7 @@ private fun ExcludedCampaignIdRow(
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = AppSurfaceHigh),
-        shape = RoundedCornerShape(8.dp),
+        shape = RoundedCornerShape(14.dp),
     ) {
         Row(
             modifier = Modifier

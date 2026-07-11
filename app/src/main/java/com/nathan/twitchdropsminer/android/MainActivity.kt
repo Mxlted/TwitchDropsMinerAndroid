@@ -3,7 +3,6 @@ package com.nathan.twitchdropsminer.android
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -13,6 +12,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
+import androidx.core.net.toUri
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nathan.twitchdropsminer.android.ui.AppViewModel
 import com.nathan.twitchdropsminer.android.ui.TwitchDropsMinerApp
@@ -40,10 +40,6 @@ class MainActivity : ComponentActivity() {
             TwitchDropsMinerApp(
                 uiState = uiState,
                 onCompleteOnboarding = viewModel::completeOnboarding,
-                onEnableSampleMode = {
-                    viewModel.completeOnboarding()
-                    viewModel.setSampleFallback(true)
-                },
                 onStartLogin = viewModel::startLogin,
                 onOpenActivation = ::openUrl,
                 onRefresh = viewModel::refreshNow,
@@ -59,7 +55,10 @@ class MainActivity : ComponentActivity() {
                     }
                 },
                 onStopMining = viewModel::stopMining,
+                onFindNewChannel = viewModel::findNewChannel,
+                onSelectChannel = viewModel::selectChannel,
                 onToggleGamePriority = viewModel::toggleGamePriority,
+                onMoveGamePriority = viewModel::moveGamePriority,
                 onSetGamePriority = viewModel::setGamePriority,
                 onClearGamePriority = viewModel::clearGamePriority,
                 onSetCampaignExclusion = viewModel::setCampaignExclusion,
@@ -70,7 +69,6 @@ class MainActivity : ComponentActivity() {
                 onKeepActiveScreenModeChanged = viewModel::setKeepActiveScreenMode,
                 onEnterDimScreen = viewModel::enterDimScreen,
                 onExitDimScreen = viewModel::exitDimScreen,
-                onSampleFallbackChanged = viewModel::setSampleFallback,
                 onFallbackToAutoWhenPrioritizedCompleteChanged =
                     viewModel::setFallbackToAutoWhenPrioritizedComplete,
                 onFallbackToAutoWhenNoPrioritizedChannelChanged =
@@ -97,7 +95,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         runCatching {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url.trim())))
+            startActivity(Intent(Intent.ACTION_VIEW, url.trim().toUri()))
         }
     }
 

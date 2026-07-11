@@ -286,18 +286,15 @@ object SettingsPreferencesMapper {
     val MonitorInForeground = booleanPreferencesKey("monitor_in_foreground")
     val RunInForeground = booleanPreferencesKey("run_in_foreground")
     val KeepActiveScreenMode = booleanPreferencesKey("keep_active_screen_mode")
-    val UseSampleDataFallback = booleanPreferencesKey("use_sample_data_fallback")
     val FallbackToAutoWhenPrioritizedComplete =
         booleanPreferencesKey("fallback_to_auto_when_prioritized_complete")
     val FallbackToAutoWhenNoPrioritizedChannel =
         booleanPreferencesKey("fallback_to_auto_when_no_prioritized_channel")
     val AllowWatchingUnlinkedGames = booleanPreferencesKey("allow_watching_unlinked_games")
-    val SampleMode = booleanPreferencesKey("sample_mode")
     val ExcludedCampaignIds = stringSetPreferencesKey("excluded_campaign_ids")
     val SelectedCampaignIds = stringSetPreferencesKey("selected_campaign_ids")
     val SelectedGames = stringSetPreferencesKey("selected_games")
     val SelectedGamePriority = stringPreferencesKey("selected_game_priority")
-    val BatteryHelpDismissed = booleanPreferencesKey("battery_help_dismissed")
     val DebugLogging = booleanPreferencesKey("debug_logging")
     val AdvancedBackendMode = booleanPreferencesKey("advanced_backend_mode")
 
@@ -315,20 +312,15 @@ object SettingsPreferencesMapper {
                 ?: preferences[MonitorInForeground]
                 ?: true,
             keepActiveScreenMode = preferences[KeepActiveScreenMode] ?: false,
-            useSampleDataFallback = preferences[UseSampleDataFallback]
-                ?: preferences[SampleMode]
-                ?: false,
             fallbackToAutoWhenPrioritizedComplete =
                 preferences[FallbackToAutoWhenPrioritizedComplete] ?: false,
             fallbackToAutoWhenNoPrioritizedChannel =
                 preferences[FallbackToAutoWhenNoPrioritizedChannel] ?: false,
             allowWatchingUnlinkedGames = preferences[AllowWatchingUnlinkedGames] ?: false,
-            sampleMode = preferences[SampleMode] ?: false,
             excludedCampaignIds = preferences[ExcludedCampaignIds] ?: emptySet(),
             selectedCampaignIds = preferences[SelectedCampaignIds] ?: emptySet(),
             selectedGames = preferences[SelectedGames] ?: emptySet(),
             selectedGamePriority = decodeGamePriority(preferences[SelectedGamePriority]),
-            batteryHelpDismissed = preferences[BatteryHelpDismissed] ?: false,
             debugLogging = preferences[DebugLogging] ?: false,
             advancedBackendMode = preferences[AdvancedBackendMode] ?: false,
         ).normalized()
@@ -342,18 +334,15 @@ object SettingsPreferencesMapper {
         preferences[MonitorInForeground] = settings.monitorInForeground
         preferences[RunInForeground] = settings.runInForeground
         preferences[KeepActiveScreenMode] = settings.keepActiveScreenMode
-        preferences[UseSampleDataFallback] = settings.useSampleDataFallback
         preferences[FallbackToAutoWhenPrioritizedComplete] =
             settings.fallbackToAutoWhenPrioritizedComplete
         preferences[FallbackToAutoWhenNoPrioritizedChannel] =
             settings.fallbackToAutoWhenNoPrioritizedChannel
         preferences[AllowWatchingUnlinkedGames] = settings.allowWatchingUnlinkedGames
-        preferences[SampleMode] = settings.sampleMode
         preferences[ExcludedCampaignIds] = settings.excludedCampaignIds
         preferences[SelectedCampaignIds] = settings.selectedCampaignIds
         preferences[SelectedGames] = settings.selectedGames
         preferences[SelectedGamePriority] = SettingsJson.encodeToString(settings.selectedGamePriority)
-        preferences[BatteryHelpDismissed] = settings.batteryHelpDismissed
         preferences[DebugLogging] = settings.debugLogging
         preferences[AdvancedBackendMode] = settings.advancedBackendMode
     }

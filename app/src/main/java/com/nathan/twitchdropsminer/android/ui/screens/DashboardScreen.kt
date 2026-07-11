@@ -5,20 +5,32 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.nathan.twitchdropsminer.android.data.model.AppSettings
 import com.nathan.twitchdropsminer.android.data.model.Campaign
+import com.nathan.twitchdropsminer.android.data.model.Channel
 import com.nathan.twitchdropsminer.android.data.model.LoginState
 import com.nathan.twitchdropsminer.android.data.model.RuntimePhase
 import com.nathan.twitchdropsminer.android.data.model.RuntimeSnapshot
@@ -37,8 +49,48 @@ fun DashboardScreen(
     onRefresh: () -> Unit,
     onStartMining: () -> Unit,
     onStopMining: () -> Unit,
+    onFindNewChannel: () -> Unit,
+    onSelectChannel: (Long) -> Unit,
     onEnterDimScreen: () -> Unit,
 ) {
+    var showChannelPicker by rememberSaveable { mutableStateOf(false) }
+    val activelyWorking = snapshot.phase !in setOf(
+        RuntimePhase.Stopped,
+        RuntimePhase.Idle,
+        RuntimePhase.Error,
+    )
+    val currentChannel = snapshot.watchingChannel
+    val compatibleChannels = (listOfNotNull(currentChannel) + snapshot.channels)
+        .distinctBy { channel -> channel.id }
+        .filter { channel ->
+            channel.id == currentChannel?.id ||
+                (channel.online && channel.dropsEnabled && !channel.broadcastId.isNullOrBlank())
+        }
+        .sortedWith(
+            compareByDescending<Channel> { channel -> channel.id == currentChannel?.id }
+                .thenByDescending { channel -> channel.aclBased }
+                .thenByDescending { channel -> channel.viewers ?: -1 },
+        )
+
+    LaunchedEffect(snapshot.isRunning) {
+        if (!snapshot.isRunning) {
+            showChannelPicker = false
+        }
+    }
+
+    if (showChannelPicker) {
+        ChannelPickerDialog(
+            campaignName = snapshot.activeCampaign?.gameName ?: "Current campaign",
+            channels = compatibleChannels,
+            currentChannelId = currentChannel?.id,
+            loading = snapshot.channelSearchInProgress,
+            onSelectChannel = { channelId ->
+                onSelectChannel(channelId)
+                showChannelPicker = false
+            },
+            onDismiss = { showChannelPicker = false },
+        )
+    }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -52,7 +104,7 @@ fun DashboardScreen(
             trailing = { StatusPill(snapshot.phase.uiLabel(), phase = snapshot.phase) },
         )
 
-        if (isRefreshing || snapshot.isRunning) {
+        if (isRefreshing || activelyWorking) {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = AppAccent)
         }
 
@@ -156,19 +208,53 @@ fun DashboardScreen(
                 },
             )
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                Button(onClick = onStartMining, modifier = Modifier.weight(1f), enabled = !snapshot.isRunning) {
+                Button(
+                    onClick = onStartMining,
+                    modifier = Modifier.weight(1f),
+                    enabled = !snapshot.isRunning && snapshot.account.state == LoginState.LoggedIn,
+                ) {
                     Text("Start")
                 }
                 OutlinedButton(
                     onClick = onStopMining,
                     modifier = Modifier.weight(1f),
-                    enabled = snapshot.isRunning || snapshot.phase == RuntimePhase.Error,
+                    enabled = snapshot.isRunning,
                 ) {
                     Text("Stop")
                 }
             }
-            OutlinedButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(
+                onClick = {
+                    showChannelPicker = true
+                    onFindNewChannel()
+                },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = snapshot.isRunning &&
+                    snapshot.phase == RuntimePhase.Watching &&
+                    snapshot.activeCampaign != null &&
+                    snapshot.watchingChannel != null &&
+                    !snapshot.channelSearchInProgress,
+            ) {
+                Text(if (snapshot.channelSearchInProgress) "Finding Channels" else "Find New Channel")
+            }
+            Text(
+                text = "Opens a refreshed list of compatible Drops-enabled streamers. The current channel stays active until you choose another.",
+                style = MaterialTheme.typography.bodySmall,
+                color = AppMuted,
+            )
+            OutlinedButton(
+                onClick = onRefresh,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !isRefreshing && snapshot.account.state == LoginState.LoggedIn,
+            ) {
                 Text(if (isRefreshing) "Refreshing Inventory" else "Refresh Inventory")
+            }
+            if (snapshot.account.state != LoginState.LoggedIn) {
+                Text(
+                    text = "Sign in to Twitch before refreshing inventory or starting the miner.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = AppMuted,
+                )
             }
             OutlinedButton(
                 onClick = onEnterDimScreen,
@@ -186,6 +272,87 @@ fun DashboardScreen(
             }
         }
     }
+}
+
+@Composable
+private fun ChannelPickerDialog(
+    campaignName: String,
+    channels: List<Channel>,
+    currentChannelId: Long?,
+    loading: Boolean,
+    onSelectChannel: (Long) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val alternateCount = channels.count { channel -> channel.id != currentChannelId }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Choose a Channel") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = campaignName,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                if (loading) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        CircularProgressIndicator()
+                        Text("Checking compatible live streamers…")
+                    }
+                } else {
+                    Text(
+                        text = if (alternateCount == 0) {
+                            "No alternate compatible streamer was found. The current channel will remain active."
+                        } else {
+                            "$alternateCount alternate compatible ${if (alternateCount == 1) "streamer" else "streamers"} found."
+                        },
+                        color = AppMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    LazyColumn(
+                        modifier = Modifier.heightIn(max = 420.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(
+                            items = channels,
+                            key = { channel -> channel.id },
+                        ) { channel ->
+                            val isCurrent = channel.id == currentChannelId
+                            OutlinedButton(
+                                onClick = { onSelectChannel(channel.id) },
+                                enabled = !isCurrent,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Column(modifier = Modifier.fillMaxWidth()) {
+                                    Text(
+                                        text = if (isCurrent) "${channel.name} (Current)" else channel.name,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                    Text(
+                                        text = buildString {
+                                            append(channel.viewers?.let { "$it viewers" } ?: "Viewer count unavailable")
+                                            if (channel.aclBased) append(" • Campaign allowed")
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = AppMuted,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close")
+            }
+        },
+    )
 }
 
 private fun Campaign?.selectedCampaignLabel(): String =

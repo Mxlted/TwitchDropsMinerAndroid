@@ -4,6 +4,7 @@ import android.content.Context
 import com.nathan.twitchdropsminer.android.data.local.LogRepository
 import com.nathan.twitchdropsminer.android.data.local.SecureSessionStore
 import com.nathan.twitchdropsminer.android.data.local.SettingsRepository
+import com.nathan.twitchdropsminer.android.data.network.AndroidNetworkStatusProvider
 import com.nathan.twitchdropsminer.android.data.twitch.TwitchApiClient
 import com.nathan.twitchdropsminer.android.runtime.LocalMinerRuntime
 import java.util.concurrent.TimeUnit
@@ -21,12 +22,14 @@ class AppGraph private constructor(context: Context) {
     val settingsRepository = SettingsRepository(appContext)
     val logRepository = LogRepository(appContext)
     val secureSessionStore = SecureSessionStore(appContext)
+    val networkStatusProvider = AndroidNetworkStatusProvider(appContext)
     val twitchApiClient = TwitchApiClient(okHttpClient)
     val localMinerRuntime = LocalMinerRuntime(
         settingsRepository = settingsRepository,
         secureSessionStore = secureSessionStore,
         logRepository = logRepository,
         twitchApiClient = twitchApiClient,
+        networkStatusProvider = networkStatusProvider,
     )
 
     companion object {

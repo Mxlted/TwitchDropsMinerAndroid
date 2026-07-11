@@ -117,11 +117,7 @@ class MinerForegroundService : Service() {
 
         fun start(context: Context) {
             val intent = Intent(context, MinerForegroundService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
+            context.startForegroundService(intent)
         }
 
         fun stop(context: Context) {

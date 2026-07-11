@@ -37,6 +37,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -79,6 +81,7 @@ fun ScreenHeader(
         ) {
             Text(
                 text = title,
+                modifier = Modifier.semantics { heading() },
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
             )
@@ -102,7 +105,7 @@ fun SectionCard(
     Card(
         modifier = modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = AppSurfaceHigh),
-        shape = RoundedCornerShape(8.dp),
+        shape = RoundedCornerShape(16.dp),
         border = BorderStroke(
             width = 1.dp,
             color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.16f),
@@ -121,6 +124,7 @@ fun SectionTitle(title: String, subtitle: String? = null) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(
             text = title,
+            modifier = Modifier.semantics { heading() },
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
         )
@@ -198,7 +202,7 @@ fun EmptyState(text: String, detail: String? = null) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(AppSurfaceHigh.copy(alpha = 0.46f), RoundedCornerShape(8.dp))
+            .background(AppSurfaceHigh.copy(alpha = 0.46f), RoundedCornerShape(14.dp))
             .padding(horizontal = 16.dp, vertical = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -255,7 +259,7 @@ fun RuntimeActivityLine(entry: RuntimeActivity) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(AppSurfaceHigh.copy(alpha = 0.52f), RoundedCornerShape(8.dp))
+            .background(AppSurfaceHigh.copy(alpha = 0.52f), RoundedCornerShape(14.dp))
             .padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
@@ -298,7 +302,7 @@ fun LocalLogLine(entry: LocalLogEntry) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(AppSurfaceHigh.copy(alpha = 0.42f), RoundedCornerShape(8.dp))
+            .background(AppSurfaceHigh.copy(alpha = 0.42f), RoundedCornerShape(14.dp))
             .padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {

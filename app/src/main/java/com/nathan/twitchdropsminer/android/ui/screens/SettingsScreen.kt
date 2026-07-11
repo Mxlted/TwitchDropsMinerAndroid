@@ -10,11 +10,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -33,11 +35,11 @@ import com.nathan.twitchdropsminer.android.ui.theme.AppMuted
 @Composable
 fun SettingsScreen(
     settings: AppSettings,
+    miningActive: Boolean,
     onRunInForegroundChanged: (Boolean) -> Unit,
     onWatchIntervalChanged: (Int) -> Unit,
     onInventoryRefreshChanged: (Int) -> Unit,
     onKeepActiveScreenModeChanged: (Boolean) -> Unit,
-    onSampleFallbackChanged: (Boolean) -> Unit,
     onFallbackToAutoWhenPrioritizedCompleteChanged: (Boolean) -> Unit,
     onFallbackToAutoWhenNoPrioritizedChannelChanged: (Boolean) -> Unit,
     onAllowWatchingUnlinkedGamesChanged: (Boolean) -> Unit,
@@ -50,6 +52,32 @@ fun SettingsScreen(
     var backendUrl by remember { mutableStateOf(settings.backendUrl) }
     var watchInterval by remember { mutableFloatStateOf(settings.watchIntervalSeconds.toFloat()) }
     var inventoryRefresh by remember { mutableFloatStateOf(settings.inventoryRefreshMinutes.toFloat()) }
+    var confirmReset by remember { mutableStateOf(false) }
+
+    if (confirmReset) {
+        AlertDialog(
+            onDismissRequest = { confirmReset = false },
+            title = { Text("Reset Twitch session?") },
+            text = {
+                Text("This signs out, stops mining, and clears saved priorities and campaign exclusions on this device.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmReset = false
+                        onResetSession()
+                    },
+                ) {
+                    Text("Reset Session")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmReset = false }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
 
     LaunchedEffect(settings.backendUrl) {
         backendUrl = settings.backendUrl
@@ -77,9 +105,14 @@ fun SettingsScreen(
             SectionTitle("Local Runtime", "Timing and foreground-service behavior.")
             ToggleRow(
                 title = "Foreground service while mining",
-                subtitle = "Shows a persistent notification so Android treats mining as active work.",
+                subtitle = if (miningActive) {
+                    "Stop mining before changing how the runtime is hosted."
+                } else {
+                    "Shows a persistent notification so Android treats mining as active work."
+                },
                 checked = settings.runInForeground,
                 onCheckedChange = onRunInForegroundChanged,
+                enabled = !miningActive,
             )
             SettingSlider(
                 title = "Watch heartbeat interval",
@@ -88,8 +121,8 @@ fun SettingsScreen(
                 value = watchInterval,
                 onValueChange = { watchInterval = it },
                 onValueChangeFinished = { onWatchIntervalChanged(watchInterval.toInt()) },
-                valueRange = 20f..180f,
-                steps = 15,
+                valueRange = 20f..300f,
+                steps = 13,
             )
             SettingSlider(
                 title = "Inventory refresh interval",
@@ -144,13 +177,7 @@ fun SettingsScreen(
         }
 
         SectionCard {
-            SectionTitle("Reliability", "Controls for device reliability and explicit demo data.")
-            ToggleRow(
-                title = "Demo sample fallback",
-                subtitle = "Use local sample campaigns/channels only for explicit demos or endpoint testing.",
-                checked = settings.useSampleDataFallback,
-                onCheckedChange = onSampleFallbackChanged,
-            )
+            SectionTitle("Reliability", "Android power-management controls.")
             OutlinedButton(onClick = onOpenBatterySettings, modifier = Modifier.fillMaxWidth()) {
                 Text("Open Battery Settings")
             }
@@ -191,7 +218,10 @@ fun SettingsScreen(
                 onCheckedChange = onDebugLoggingChanged,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                OutlinedButton(onClick = onResetSession, modifier = Modifier.weight(1f)) {
+                OutlinedButton(
+                    onClick = { confirmReset = true },
+                    modifier = Modifier.weight(1f),
+                ) {
                     Text("Reset Twitch Session")
                 }
             }

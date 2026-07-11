@@ -25,7 +25,6 @@ data class AppUiState(
     val localLogs: List<LocalLogEntry> = emptyList(),
     val isRefreshing: Boolean = false,
     val dimScreenActive: Boolean = false,
-    val transientMessage: String? = null,
 )
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
@@ -112,6 +111,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun findNewChannel() {
+        graph.localMinerRuntime.findNewChannel()
+    }
+
     fun toggleGamePriority(gameName: String) {
         graph.localMinerRuntime.toggleGamePriority(gameName)
     }
@@ -187,14 +190,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         mutableState.update { it.copy(dimScreenActive = false) }
     }
 
-    fun setSampleFallback(enabled: Boolean) {
-        viewModelScope.launch {
-            graph.settingsRepository.update {
-                it.copy(useSampleDataFallback = enabled, sampleMode = enabled)
-            }
-        }
-    }
-
     fun setFallbackToAutoWhenPrioritizedComplete(enabled: Boolean) {
         viewModelScope.launch {
             graph.settingsRepository.update {
@@ -252,16 +247,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             graph.settingsRepository.update { it.copy(debugLogging = enabled) }
         }
-    }
-
-    fun dismissBatteryHelp() {
-        viewModelScope.launch {
-            graph.settingsRepository.update { it.copy(batteryHelpDismissed = true) }
-        }
-    }
-
-    fun consumeTransientMessage() {
-        mutableState.update { it.copy(transientMessage = null) }
     }
 
     class Factory(private val application: Application) : ViewModelProvider.Factory {

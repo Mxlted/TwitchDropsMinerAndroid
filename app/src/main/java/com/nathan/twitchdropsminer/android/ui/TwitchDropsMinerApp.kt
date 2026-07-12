@@ -77,13 +77,12 @@ fun TwitchDropsMinerApp(
     onKeepActiveScreenModeChanged: (Boolean) -> Unit,
     onEnterDimScreen: () -> Unit,
     onExitDimScreen: () -> Unit,
-    onFallbackToAutoWhenPrioritizedCompleteChanged: (Boolean) -> Unit,
-    onFallbackToAutoWhenNoPrioritizedChannelChanged: (Boolean) -> Unit,
-    onAllowWatchingUnlinkedGamesChanged: (Boolean) -> Unit,
+    onFallbackToOtherGamesChanged: (Boolean) -> Unit,
     onAdvancedBackendModeChanged: (Boolean) -> Unit,
     onSaveBackendUrl: (String) -> Unit,
     onDebugLoggingChanged: (Boolean) -> Unit,
     onOpenBatterySettings: () -> Unit,
+    onResetSettings: () -> Unit,
     onResetSession: () -> Unit,
 ) {
     TwitchDropsMinerTheme {
@@ -119,15 +118,12 @@ fun TwitchDropsMinerApp(
                     onInventoryRefreshChanged = onInventoryRefreshChanged,
                     onKeepActiveScreenModeChanged = onKeepActiveScreenModeChanged,
                     onEnterDimScreen = onEnterDimScreen,
-                    onFallbackToAutoWhenPrioritizedCompleteChanged =
-                        onFallbackToAutoWhenPrioritizedCompleteChanged,
-                    onFallbackToAutoWhenNoPrioritizedChannelChanged =
-                        onFallbackToAutoWhenNoPrioritizedChannelChanged,
-                    onAllowWatchingUnlinkedGamesChanged = onAllowWatchingUnlinkedGamesChanged,
+                    onFallbackToOtherGamesChanged = onFallbackToOtherGamesChanged,
                     onAdvancedBackendModeChanged = onAdvancedBackendModeChanged,
                     onSaveBackendUrl = onSaveBackendUrl,
                     onDebugLoggingChanged = onDebugLoggingChanged,
                     onOpenBatterySettings = onOpenBatterySettings,
+                    onResetSettings = onResetSettings,
                     onResetSession = onResetSession,
                 )
             }
@@ -156,13 +152,12 @@ private fun MainScaffold(
     onInventoryRefreshChanged: (Int) -> Unit,
     onKeepActiveScreenModeChanged: (Boolean) -> Unit,
     onEnterDimScreen: () -> Unit,
-    onFallbackToAutoWhenPrioritizedCompleteChanged: (Boolean) -> Unit,
-    onFallbackToAutoWhenNoPrioritizedChannelChanged: (Boolean) -> Unit,
-    onAllowWatchingUnlinkedGamesChanged: (Boolean) -> Unit,
+    onFallbackToOtherGamesChanged: (Boolean) -> Unit,
     onAdvancedBackendModeChanged: (Boolean) -> Unit,
     onSaveBackendUrl: (String) -> Unit,
     onDebugLoggingChanged: (Boolean) -> Unit,
     onOpenBatterySettings: () -> Unit,
+    onResetSettings: () -> Unit,
     onResetSession: () -> Unit,
 ) {
     var destination by rememberSaveable { mutableStateOf(MainDestination.Dashboard) }
@@ -212,15 +207,12 @@ private fun MainScaffold(
                     onWatchIntervalChanged = onWatchIntervalChanged,
                     onInventoryRefreshChanged = onInventoryRefreshChanged,
                     onKeepActiveScreenModeChanged = onKeepActiveScreenModeChanged,
-                    onFallbackToAutoWhenPrioritizedCompleteChanged =
-                        onFallbackToAutoWhenPrioritizedCompleteChanged,
-                    onFallbackToAutoWhenNoPrioritizedChannelChanged =
-                        onFallbackToAutoWhenNoPrioritizedChannelChanged,
-                    onAllowWatchingUnlinkedGamesChanged = onAllowWatchingUnlinkedGamesChanged,
+                    onFallbackToOtherGamesChanged = onFallbackToOtherGamesChanged,
                     onAdvancedBackendModeChanged = onAdvancedBackendModeChanged,
                     onSaveBackendUrl = onSaveBackendUrl,
                     onDebugLoggingChanged = onDebugLoggingChanged,
                     onOpenBatterySettings = onOpenBatterySettings,
+                    onResetSettings = onResetSettings,
                     onResetSession = onResetSession,
                 )
             }

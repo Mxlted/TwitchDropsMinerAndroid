@@ -1,12 +1,14 @@
 package com.nathan.twitchdropsminer.android
 
+import androidx.datastore.preferences.core.mutablePreferencesOf
 import androidx.datastore.preferences.core.preferencesOf
 import com.nathan.twitchdropsminer.android.data.local.CampaignExclusionIds
-import com.nathan.twitchdropsminer.android.data.model.AppSettings
 import com.nathan.twitchdropsminer.android.data.local.GamePriorityCleanup
 import com.nathan.twitchdropsminer.android.data.local.GamePriorityOrder
 import com.nathan.twitchdropsminer.android.data.local.SettingsPreferencesMapper
+import com.nathan.twitchdropsminer.android.data.model.AppSettings
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -17,9 +19,7 @@ class SettingsPersistenceTest {
             SettingsPreferencesMapper.HasCompletedOnboarding to true,
             SettingsPreferencesMapper.WatchIntervalSeconds to 3,
             SettingsPreferencesMapper.InventoryRefreshMinutes to 5,
-            SettingsPreferencesMapper.FallbackToAutoWhenPrioritizedComplete to true,
-            SettingsPreferencesMapper.FallbackToAutoWhenNoPrioritizedChannel to true,
-            SettingsPreferencesMapper.AllowWatchingUnlinkedGames to true,
+            SettingsPreferencesMapper.LegacyFallbackToAutoWhenPrioritizedComplete to true,
             SettingsPreferencesMapper.KeepActiveScreenMode to true,
             SettingsPreferencesMapper.ExcludedCampaignIds to setOf(" campaign-2 ", ""),
             SettingsPreferencesMapper.SelectedCampaignIds to setOf("campaign-1"),
@@ -29,9 +29,7 @@ class SettingsPersistenceTest {
         val settings = SettingsPreferencesMapper.fromPreferences(preferences)
 
         assertTrue(settings.hasCompletedOnboarding)
-        assertTrue(settings.fallbackToAutoWhenPrioritizedComplete)
-        assertTrue(settings.fallbackToAutoWhenNoPrioritizedChannel)
-        assertTrue(settings.allowWatchingUnlinkedGames)
+        assertTrue(settings.fallbackToOtherGames)
         assertTrue(settings.keepActiveScreenMode)
         assertEquals(20, settings.watchIntervalSeconds)
         assertEquals(15, settings.inventoryRefreshMinutes)
@@ -97,10 +95,76 @@ class SettingsPersistenceTest {
     }
 
     @Test
-    fun unlinkedWatchingDefaultsToOptIn() {
+    fun fallbackToOtherGamesDefaultsToOff() {
         val settings = SettingsPreferencesMapper.fromPreferences(preferencesOf())
 
-        assertEquals(false, settings.allowWatchingUnlinkedGames)
+        assertFalse(settings.fallbackToOtherGames)
+    }
+
+    @Test
+    fun anyEnabledLegacyFallbackMigratesToUnifiedFallback() {
+        val legacyPreferences = listOf(
+            SettingsPreferencesMapper.LegacyFallbackToAutoWhenPrioritizedComplete,
+            SettingsPreferencesMapper.LegacyFallbackToAutoWhenNoPrioritizedChannel,
+            SettingsPreferencesMapper.LegacyAllowWatchingUnlinkedGames,
+        )
+
+        legacyPreferences.forEach { legacyKey ->
+            val settings = SettingsPreferencesMapper.fromPreferences(
+                preferencesOf(legacyKey to true),
+            )
+
+            assertTrue(settings.fallbackToOtherGames)
+        }
+    }
+
+    @Test
+    fun savedUnifiedFallbackOverridesLegacyValues() {
+        val settings = SettingsPreferencesMapper.fromPreferences(
+            preferencesOf(
+                SettingsPreferencesMapper.FallbackToOtherGames to false,
+                SettingsPreferencesMapper.LegacyAllowWatchingUnlinkedGames to true,
+            ),
+        )
+
+        assertFalse(settings.fallbackToOtherGames)
+    }
+
+    @Test
+    fun writingUnifiedFallbackRemovesLegacyKeys() {
+        val preferences = mutablePreferencesOf(
+            SettingsPreferencesMapper.LegacyFallbackToAutoWhenPrioritizedComplete to true,
+            SettingsPreferencesMapper.LegacyFallbackToAutoWhenNoPrioritizedChannel to true,
+            SettingsPreferencesMapper.LegacyAllowWatchingUnlinkedGames to true,
+        )
+
+        SettingsPreferencesMapper.write(
+            preferences,
+            AppSettings(fallbackToOtherGames = true),
+        )
+
+        assertEquals(true, preferences[SettingsPreferencesMapper.FallbackToOtherGames])
+        assertEquals(null, preferences[SettingsPreferencesMapper.LegacyFallbackToAutoWhenPrioritizedComplete])
+        assertEquals(null, preferences[SettingsPreferencesMapper.LegacyFallbackToAutoWhenNoPrioritizedChannel])
+        assertEquals(null, preferences[SettingsPreferencesMapper.LegacyAllowWatchingUnlinkedGames])
+    }
+
+    @Test
+    fun resetRestoresDefaultsWhileKeepingOnboardingComplete() {
+        val preferences = mutablePreferencesOf(
+            SettingsPreferencesMapper.HasCompletedOnboarding to true,
+            SettingsPreferencesMapper.WatchIntervalSeconds to 120,
+            SettingsPreferencesMapper.FallbackToOtherGames to true,
+            SettingsPreferencesMapper.SelectedGamePriority to """["Game"]""",
+            SettingsPreferencesMapper.ExcludedCampaignIds to setOf("campaign-1"),
+            SettingsPreferencesMapper.DebugLogging to true,
+        )
+
+        SettingsPreferencesMapper.reset(preferences)
+        val reset = SettingsPreferencesMapper.fromPreferences(preferences)
+
+        assertTrue(reset.hasCompletedOnboarding)
+        assertEquals(AppSettings(hasCompletedOnboarding = true), reset)
     }
 
     @Test

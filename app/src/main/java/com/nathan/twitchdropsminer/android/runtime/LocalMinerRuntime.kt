@@ -28,6 +28,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
@@ -481,7 +482,11 @@ class LocalMinerRuntime(
                     )
                 }
                 appendActivity(RuntimePhase.Idle, selectedWork.activityTitle, selectedWork.detail)
-                delay(selectedWork.retryDelayMillis(settings))
+                RuntimeIdleWait.awaitSettingsChangeOrTimeout(
+                    settings = settingsRepository.settings,
+                    currentSettings = settings,
+                    timeoutMillis = selectedWork.retryDelayMillis(settings),
+                )
                 continue
             }
 
@@ -928,7 +933,7 @@ class LocalMinerRuntime(
         decision: CampaignCandidateDecision.Try,
     ) {
         val activityTitle = when {
-            decision.mode.isAutoFallback -> "Falling back to Auto Mode"
+            decision.mode.isLinkedFallback -> "Falling back to linked games"
             decision.mode.isUnlinked -> "Trying unlinked games"
             else -> return
         }
@@ -1420,6 +1425,16 @@ internal object ActiveWatchGuard {
         settings.isCampaignExcluded(campaign)
 }
 
+internal object RuntimeIdleWait {
+    suspend fun awaitSettingsChangeOrTimeout(
+        settings: Flow<AppSettings>,
+        currentSettings: AppSettings,
+        timeoutMillis: Long,
+    ): AppSettings? = withTimeoutOrNull(timeoutMillis) {
+        settings.first { candidate -> candidate != currentSettings }
+    }
+}
+
 internal object CampaignPrioritySelector {
     fun select(settings: AppSettings, campaigns: List<Campaign>): Campaign? {
         return candidates(settings, campaigns).firstOrNull()
@@ -1444,14 +1459,22 @@ internal object CampaignPrioritySelector {
                     detail = "No game priority is set.",
                 )
             }
-            return unlinkedDecision(
-                settings = settings,
-                campaigns = selectableCampaigns,
-                task = "Trying unlinked games",
-                detail = "Auto Mode found no linked active campaign with remaining or claimable drops.",
-            ) ?: CampaignCandidateDecision.Idle(
+            return if (settings.fallbackToOtherGames) {
+                unlinkedDecision(
+                    settings = settings,
+                    campaigns = selectableCampaigns,
+                    task = "Trying unlinked games",
+                    detail = "Auto Mode exhausted linked campaigns for this session.",
+                )
+            } else {
+                null
+            } ?: CampaignCandidateDecision.Idle(
                 task = "No available campaign can be mined",
-                detail = "Auto Mode found no linked active campaign with remaining or claimable drops.",
+                detail = if (settings.fallbackToOtherGames) {
+                    "No linked or unlinked campaign has usable work for this session."
+                } else {
+                    "Auto Mode found no linked active campaign with remaining or claimable drops."
+                },
             )
         }
 
@@ -1465,76 +1488,52 @@ internal object CampaignPrioritySelector {
             )
         }
 
-        prioritizedUnlinkedDecision(
+        val prioritiesComplete = prioritizedGamesComplete(settings, selectableCampaigns)
+        val prioritiesExcluded = prioritizedGamesCompleteOrExcluded(settings, campaigns)
+        if (!settings.fallbackToOtherGames) {
+            return when {
+                prioritiesComplete -> CampaignCandidateDecision.Idle(
+                    task = "All prioritized games are complete",
+                    detail = "Fallback to other games is disabled.",
+                    activityTitle = "Priority mining idle",
+                )
+
+                prioritiesExcluded -> CampaignCandidateDecision.Idle(
+                    task = "Prioritized campaigns are excluded",
+                    detail = "Fallback to other games is disabled.",
+                    activityTitle = "Priority mining idle",
+                )
+
+                else -> CampaignCandidateDecision.Idle(
+                    task = "No prioritized game can be mined",
+                    detail = "Prioritized games have no usable linked campaign for this session, and fallback is disabled.",
+                )
+            }
+        }
+
+        val fallbackCandidates = autoFallbackCandidates(settings, selectableCampaigns)
+        val fallbackDetail = when {
+            prioritiesComplete -> "All prioritized games are complete."
+            prioritiesExcluded -> "Prioritized campaigns are excluded by user choice."
+            else -> "Prioritized games have no usable linked campaign for this session."
+        }
+        if (fallbackCandidates.isNotEmpty()) {
+            return CampaignCandidateDecision.Try(
+                mode = CampaignSelectionMode.LinkedFallback,
+                candidates = fallbackCandidates,
+                task = "Trying linked games outside priority",
+                detail = fallbackDetail,
+            )
+        }
+        return unlinkedDecision(
             settings = settings,
             campaigns = selectableCampaigns,
-            task = "Trying prioritized unlinked games",
-            detail = "No prioritized linked campaign has remaining work; checking prioritized unlinked games.",
-        )?.let { return it }
-
-        if (prioritizedGamesComplete(settings, selectableCampaigns)) {
-            if (settings.fallbackToAutoWhenPrioritizedComplete) {
-                val autoCandidates = autoFallbackCandidates(settings, selectableCampaigns)
-                if (autoCandidates.isNotEmpty()) {
-                    return CampaignCandidateDecision.Try(
-                        mode = CampaignSelectionMode.AutoFallbackPrioritiesComplete,
-                        candidates = autoCandidates,
-                        task = "Prioritized games complete; using Auto Mode",
-                        detail = "All prioritized games are complete.",
-                    )
-                }
-                return unlinkedDecision(
-                    settings = settings,
-                    campaigns = selectableCampaigns,
-                    task = "Prioritized games complete; trying unlinked games",
-                    detail = "Auto Mode fallback found no other linked eligible campaign.",
-                ) ?: CampaignCandidateDecision.Idle(
-                    task = "All prioritized games are complete",
-                    detail = "Auto Mode fallback is enabled, but no other eligible campaign is available.",
-                    activityTitle = "Priority mining idle",
-                )
-            }
-
-            return CampaignCandidateDecision.Idle(
-                task = "All prioritized games are complete",
-                detail = "Auto Mode fallback for completed prioritized games is disabled.",
-                activityTitle = "Priority mining idle",
-            )
-        }
-
-        if (prioritizedGamesCompleteOrExcluded(settings, campaigns)) {
-            if (settings.fallbackToAutoWhenPrioritizedComplete) {
-                val autoCandidates = autoFallbackCandidates(settings, selectableCampaigns)
-                if (autoCandidates.isNotEmpty()) {
-                    return CampaignCandidateDecision.Try(
-                        mode = CampaignSelectionMode.AutoFallbackPrioritiesComplete,
-                        candidates = autoCandidates,
-                        task = "Prioritized campaigns excluded; using Auto Mode",
-                        detail = "Prioritized campaigns are excluded by user choice.",
-                    )
-                }
-                return unlinkedDecision(
-                    settings = settings,
-                    campaigns = selectableCampaigns,
-                    task = "Prioritized campaigns excluded; trying unlinked games",
-                    detail = "Auto Mode fallback found no other linked eligible campaign.",
-                ) ?: CampaignCandidateDecision.Idle(
-                    task = "Prioritized campaigns are excluded",
-                    detail = "Auto Mode fallback is enabled, but no other eligible campaign is available.",
-                    activityTitle = "Priority mining idle",
-                )
-            }
-
-            return CampaignCandidateDecision.Idle(
-                task = "Prioritized campaigns are excluded",
-                detail = "Auto Mode fallback for unavailable prioritized campaigns is disabled.",
-                activityTitle = "Priority mining idle",
-            )
-        }
-
-        return CampaignCandidateDecision.Idle(
-            task = "No prioritized game can be mined",
-            detail = "Prioritized games have no linked active campaign with remaining or claimable drops.",
+            task = "Trying unlinked games",
+            detail = "$fallbackDetail No other linked campaign has usable work.",
+        ) ?: CampaignCandidateDecision.Idle(
+            task = "No fallback campaign can be mined",
+            detail = "Priority and other linked or unlinked campaigns have no usable work for this session.",
+            activityTitle = "Fallback idle",
         )
     }
 
@@ -1546,15 +1545,10 @@ internal object CampaignPrioritySelector {
         if (!settings.hasGamePriority) {
             return noChannelDecision(CampaignSelectionMode.Auto)
         }
-        if (!settings.fallbackToAutoWhenNoPrioritizedChannel) {
-            return prioritizedUnlinkedDecision(
-                settings = settings,
-                campaigns = selectableCampaigns,
-                task = "No prioritized live channel; trying prioritized unlinked games",
-                detail = "Auto Mode fallback is disabled; checking prioritized unlinked games only.",
-            ) ?: CampaignCandidateDecision.Idle(
+        if (!settings.fallbackToOtherGames) {
+            return CampaignCandidateDecision.Idle(
                 task = "No prioritized games have eligible live channels",
-                detail = "Auto Mode fallback for prioritized games without live channels is disabled.",
+                detail = "Fallback to other games is disabled.",
                 activityTitle = "Priority mining idle",
                 retry = CampaignIdleRetry.WatchInterval,
             )
@@ -1563,21 +1557,21 @@ internal object CampaignPrioritySelector {
         val autoCandidates = autoFallbackCandidates(settings, selectableCampaigns)
         if (autoCandidates.isNotEmpty()) {
             return CampaignCandidateDecision.Try(
-                mode = CampaignSelectionMode.AutoFallbackNoPrioritizedChannel,
+                mode = CampaignSelectionMode.LinkedFallback,
                 candidates = autoCandidates,
-                task = "No prioritized live channel; using Auto Mode",
+                task = "No prioritized live channel; trying other linked games",
                 detail = "No prioritized games currently have eligible live channels.",
             )
         }
         return unlinkedDecision(
             settings = settings,
             campaigns = selectableCampaigns,
-            task = "No prioritized live channel; trying unlinked games",
-            detail = "Auto Mode fallback found no other linked eligible campaign.",
+            task = "Linked games exhausted; trying unlinked games",
+            detail = "Prioritized and other linked campaigns have no eligible live channel for this session.",
         ) ?: CampaignCandidateDecision.Idle(
-            task = "No prioritized games have eligible live channels",
-            detail = "Auto Mode fallback is enabled, but no other eligible campaign is available.",
-            activityTitle = "Priority mining idle",
+            task = "No fallback campaign has an eligible live channel",
+            detail = "Priority, other linked, and unlinked campaigns have no usable channel for this session.",
+            activityTitle = "Fallback idle",
             retry = CampaignIdleRetry.WatchInterval,
         )
     }
@@ -1600,20 +1594,12 @@ internal object CampaignPrioritySelector {
                     detail = "Linked Auto Mode campaigns had no eligible live channel.",
                 ) ?: noChannelDecision(mode)
 
-            CampaignSelectionMode.AutoFallbackPrioritiesComplete ->
+            CampaignSelectionMode.LinkedFallback ->
                 unlinkedDecision(
                     settings = settings,
                     campaigns = selectableCampaigns,
-                    task = "Auto Mode fallback trying unlinked games",
-                    detail = "Prioritized games are complete, and linked fallback campaigns had no eligible live channel.",
-                ) ?: noChannelDecision(mode)
-
-            CampaignSelectionMode.AutoFallbackNoPrioritizedChannel ->
-                unlinkedDecision(
-                    settings = settings,
-                    campaigns = selectableCampaigns,
-                    task = "Auto Mode fallback trying unlinked games",
-                    detail = "Prioritized and linked fallback campaigns had no eligible live channel.",
+                    task = "Linked games exhausted; trying unlinked games",
+                    detail = "Prioritized and other linked campaigns had no eligible live channel.",
                 ) ?: noChannelDecision(mode)
 
             CampaignSelectionMode.Unlinked -> noChannelDecision(mode)
@@ -1631,22 +1617,15 @@ internal object CampaignPrioritySelector {
 
             CampaignSelectionMode.Prioritized -> CampaignCandidateDecision.Idle(
                 task = "No prioritized games have eligible live channels",
-                detail = "Auto Mode fallback for prioritized games without live channels is disabled.",
+                detail = "Fallback to other games is disabled.",
                 activityTitle = "Priority mining idle",
                 retry = CampaignIdleRetry.WatchInterval,
             )
 
-            CampaignSelectionMode.AutoFallbackPrioritiesComplete -> CampaignCandidateDecision.Idle(
-                task = "Auto Mode fallback found no eligible live channel",
-                detail = "Prioritized games are complete, and other eligible campaigns currently have no eligible live channel.",
-                activityTitle = "Auto Mode fallback idle",
-                retry = CampaignIdleRetry.WatchInterval,
-            )
-
-            CampaignSelectionMode.AutoFallbackNoPrioritizedChannel -> CampaignCandidateDecision.Idle(
-                task = "Auto Mode fallback found no eligible live channel",
-                detail = "Prioritized games and Auto Mode fallback campaigns currently have no eligible live channels.",
-                activityTitle = "Auto Mode fallback idle",
+            CampaignSelectionMode.LinkedFallback -> CampaignCandidateDecision.Idle(
+                task = "Linked fallback found no eligible live channel",
+                detail = "Prioritized, other linked, and unlinked campaigns currently have no eligible live channel.",
+                activityTitle = "Fallback idle",
                 retry = CampaignIdleRetry.WatchInterval,
             )
 
@@ -1661,7 +1640,7 @@ internal object CampaignPrioritySelector {
     fun prioritizedCandidates(settings: AppSettings, campaigns: List<Campaign>): List<Campaign> {
         val earnableCampaigns = campaigns
             .withoutExcludedCampaigns(settings)
-            .filter { it.canEarnLocally }
+            .filter { it.canEarnLocally && !it.isLocallyComplete }
         return settings.selectedGamePriority.flatMap { gameName ->
             earnableCampaigns.filter { campaign ->
                 campaign.gameName.equals(gameName, ignoreCase = true)
@@ -1674,10 +1653,10 @@ internal object CampaignPrioritySelector {
             .filter { campaign -> !settings.isGamePrioritized(campaign.gameName) }
 
     fun unlinkedCandidates(settings: AppSettings, campaigns: List<Campaign>): List<Campaign> =
-        if (settings.allowWatchingUnlinkedGames) {
+        if (settings.fallbackToOtherGames) {
             campaigns
                 .withoutExcludedCampaigns(settings)
-                .filter { it.canTryUnlinkedLocally }
+                .filter { it.canTryUnlinkedLocally && !it.isLocallyComplete }
                 .sortedWith(
                     compareBy<Campaign> { settings.gamePriorityIndex(it.gameName) ?: Int.MAX_VALUE }
                         .thenBy { it.remainingMinutes },
@@ -1686,15 +1665,13 @@ internal object CampaignPrioritySelector {
             emptyList()
         }
 
-    fun prioritizedUnlinkedCandidates(settings: AppSettings, campaigns: List<Campaign>): List<Campaign> =
-        unlinkedCandidates(settings, campaigns)
-            .filter { campaign -> settings.isGamePrioritized(campaign.gameName) }
-
     fun prioritizedGamesComplete(settings: AppSettings, campaigns: List<Campaign>): Boolean {
         if (!settings.hasGamePriority) {
             return false
         }
-        val selectableCampaigns = campaigns.withoutExcludedCampaigns(settings)
+        val selectableCampaigns = campaigns
+            .withoutExcludedCampaigns(settings)
+            .filterNot { it.expired }
         return settings.selectedGamePriority.all { gameName ->
             val gameCampaigns = selectableCampaigns.filter { campaign ->
                 campaign.gameName.equals(gameName, ignoreCase = true)
@@ -1707,14 +1684,15 @@ internal object CampaignPrioritySelector {
         if (!settings.hasGamePriority) {
             return false
         }
-        val hasExcludedPrioritizedCampaign = campaigns.any { campaign ->
+        val availableCampaigns = campaigns.filterNot { it.expired }
+        val hasExcludedPrioritizedCampaign = availableCampaigns.any { campaign ->
             settings.isGamePrioritized(campaign.gameName) && settings.isCampaignExcluded(campaign)
         }
         if (!hasExcludedPrioritizedCampaign) {
             return false
         }
         return settings.selectedGamePriority.all { gameName ->
-            val gameCampaigns = campaigns.filter { campaign ->
+            val gameCampaigns = availableCampaigns.filter { campaign ->
                 campaign.gameName.equals(gameName, ignoreCase = true)
             }
             gameCampaigns.isNotEmpty() &&
@@ -1727,7 +1705,7 @@ internal object CampaignPrioritySelector {
     private fun autoCandidates(settings: AppSettings, campaigns: List<Campaign>): List<Campaign> =
         campaigns
             .withoutExcludedCampaigns(settings)
-            .filter { it.canEarnLocally }
+            .filter { it.canEarnLocally && !it.isLocallyComplete }
 
     private fun unlinkedDecision(
         settings: AppSettings,
@@ -1747,22 +1725,6 @@ internal object CampaignPrioritySelector {
             }
     }
 
-    private fun prioritizedUnlinkedDecision(
-        settings: AppSettings,
-        campaigns: List<Campaign>,
-        task: String,
-        detail: String,
-    ): CampaignCandidateDecision.Try? =
-        prioritizedUnlinkedCandidates(settings, campaigns)
-            .takeIf { it.isNotEmpty() }
-            ?.let {
-                CampaignCandidateDecision.Try(
-                    mode = CampaignSelectionMode.Unlinked,
-                    candidates = it,
-                    task = task,
-                    detail = detail,
-                )
-            }
 }
 
 internal sealed class CampaignCandidateDecision {
@@ -1784,8 +1746,7 @@ internal sealed class CampaignCandidateDecision {
 internal enum class CampaignSelectionMode {
     Auto,
     Prioritized,
-    AutoFallbackPrioritiesComplete,
-    AutoFallbackNoPrioritizedChannel,
+    LinkedFallback,
     Unlinked,
 }
 
@@ -1794,9 +1755,8 @@ internal enum class CampaignIdleRetry {
     WatchInterval,
 }
 
-private val CampaignSelectionMode.isAutoFallback: Boolean
-    get() = this == CampaignSelectionMode.AutoFallbackPrioritiesComplete ||
-        this == CampaignSelectionMode.AutoFallbackNoPrioritizedChannel
+private val CampaignSelectionMode.isLinkedFallback: Boolean
+    get() = this == CampaignSelectionMode.LinkedFallback
 
 private val CampaignSelectionMode.isUnlinked: Boolean
     get() = this == CampaignSelectionMode.Unlinked
@@ -1805,8 +1765,7 @@ private fun CampaignSelectionMode.selectionTask(candidate: Campaign): String =
     when (this) {
         CampaignSelectionMode.Auto -> "Auto Mode selected ${candidate.gameName}"
         CampaignSelectionMode.Prioritized -> "Selected ${candidate.gameName}"
-        CampaignSelectionMode.AutoFallbackPrioritiesComplete,
-        CampaignSelectionMode.AutoFallbackNoPrioritizedChannel -> "Auto Mode selected ${candidate.gameName}"
+        CampaignSelectionMode.LinkedFallback -> "Linked fallback selected ${candidate.gameName}"
         CampaignSelectionMode.Unlinked -> "Trying unlinked game ${candidate.gameName}"
     }
 
@@ -1814,9 +1773,8 @@ private fun CampaignSelectionMode.noChannelDetail(candidate: Campaign): String =
     when (this) {
         CampaignSelectionMode.Auto -> "${candidate.gameName}; trying next Auto Mode campaign."
         CampaignSelectionMode.Prioritized -> "${candidate.gameName}; trying next prioritized campaign."
-        CampaignSelectionMode.AutoFallbackPrioritiesComplete,
-        CampaignSelectionMode.AutoFallbackNoPrioritizedChannel ->
-            "${candidate.gameName}; trying next Auto Mode fallback campaign."
+        CampaignSelectionMode.LinkedFallback ->
+            "${candidate.gameName}; trying next linked fallback campaign."
         CampaignSelectionMode.Unlinked -> "${candidate.gameName}; trying next unlinked game."
     }
 
@@ -1929,7 +1887,9 @@ internal object RuntimeRetryBackoff {
 }
 
 private val Campaign.isLocallyComplete: Boolean
-    get() = drops.isNotEmpty() && drops.all { drop -> drop.isClaimed }
+    get() = drops.isNotEmpty() && drops.all { drop ->
+        drop.isClaimed || drop.hasCompletedProgress
+    }
 
 private val Campaign.unlinkedProbeMinutes: Int
     get() = drops.sumOf { it.currentMinutes.coerceAtLeast(0) }

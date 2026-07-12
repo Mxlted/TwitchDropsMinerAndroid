@@ -10,8 +10,7 @@ It is intended as a mobile Android alternative to desktop Twitch Drops mining to
 * Campaign and drop tracking
 * Game priority list
 * Auto Mode when no priority games are selected
-* Optional fallback from priority games to other eligible campaigns
-* Optional unlinked-game watching with progress checks
+* One optional fallback path from priority games to other linked games, then unlinked games with progress checks
 * Foreground service for active mining
 * Persistent notification while mining is running
 * Validated-network detection with pause-and-resume recovery
@@ -100,11 +99,13 @@ The Campaigns screen lets you choose which games should be tried first.
 
 When priority games are selected, the app follows that order. If no games are prioritized, Auto Mode chooses from available eligible campaigns.
 
-Settings allow fallback behavior when priority games are complete or when they do not have an eligible live channel.
+The single **Fallback to other games** setting widens selection when priority work is complete or unusable for the current session. The miner tries prioritized linked games first, other linked games second, and unlinked games last. With no priority list, linked Auto Mode still runs first and the setting controls whether unlinked games are tried afterward.
 
 Campaigns can be marked **Exclude** from the Campaigns screen. Excluded campaigns stay visible in the Excluded view so they can be restored, but they are skipped by priority selection, Auto Mode, priority fallback, and unlinked-game probing.
 
-The **Allow watching unlinked games** setting is off by default. When enabled, the miner tries prioritized games first, then linked eligible games, then unlinked games. Unlinked watching is treated as speculative: the app checks real Twitch progress after a short window and moves to the next unlinked game if progress does not increase.
+Fallback is off by default. When enabled, unlinked watching remains the final speculative stage: the app checks real Twitch progress after a short window and moves to the next unlinked game if progress does not increase.
+
+**Reset Settings** restores runtime preferences, priorities, exclusions, and debug options without clearing the encrypted Twitch login. **Reset Twitch Session** remains a separate sign-out action.
 
 ## Keep Active Screen
 

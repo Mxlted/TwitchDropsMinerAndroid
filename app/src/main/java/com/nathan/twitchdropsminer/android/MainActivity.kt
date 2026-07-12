@@ -69,15 +69,12 @@ class MainActivity : ComponentActivity() {
                 onKeepActiveScreenModeChanged = viewModel::setKeepActiveScreenMode,
                 onEnterDimScreen = viewModel::enterDimScreen,
                 onExitDimScreen = viewModel::exitDimScreen,
-                onFallbackToAutoWhenPrioritizedCompleteChanged =
-                    viewModel::setFallbackToAutoWhenPrioritizedComplete,
-                onFallbackToAutoWhenNoPrioritizedChannelChanged =
-                    viewModel::setFallbackToAutoWhenNoPrioritizedChannel,
-                onAllowWatchingUnlinkedGamesChanged = viewModel::setAllowWatchingUnlinkedGames,
+                onFallbackToOtherGamesChanged = viewModel::setFallbackToOtherGames,
                 onAdvancedBackendModeChanged = viewModel::setAdvancedBackendMode,
                 onSaveBackendUrl = viewModel::saveBackendUrl,
                 onDebugLoggingChanged = viewModel::setDebugLogging,
                 onOpenBatterySettings = ::openBatterySettings,
+                onResetSettings = viewModel::resetSettings,
                 onResetSession = viewModel::resetSession,
             )
         }

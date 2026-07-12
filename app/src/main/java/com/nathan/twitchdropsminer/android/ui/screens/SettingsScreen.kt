@@ -40,23 +40,48 @@ fun SettingsScreen(
     onWatchIntervalChanged: (Int) -> Unit,
     onInventoryRefreshChanged: (Int) -> Unit,
     onKeepActiveScreenModeChanged: (Boolean) -> Unit,
-    onFallbackToAutoWhenPrioritizedCompleteChanged: (Boolean) -> Unit,
-    onFallbackToAutoWhenNoPrioritizedChannelChanged: (Boolean) -> Unit,
-    onAllowWatchingUnlinkedGamesChanged: (Boolean) -> Unit,
+    onFallbackToOtherGamesChanged: (Boolean) -> Unit,
     onAdvancedBackendModeChanged: (Boolean) -> Unit,
     onSaveBackendUrl: (String) -> Unit,
     onDebugLoggingChanged: (Boolean) -> Unit,
     onOpenBatterySettings: () -> Unit,
+    onResetSettings: () -> Unit,
     onResetSession: () -> Unit,
 ) {
     var backendUrl by remember { mutableStateOf(settings.backendUrl) }
     var watchInterval by remember { mutableFloatStateOf(settings.watchIntervalSeconds.toFloat()) }
     var inventoryRefresh by remember { mutableFloatStateOf(settings.inventoryRefreshMinutes.toFloat()) }
-    var confirmReset by remember { mutableStateOf(false) }
+    var confirmSettingsReset by remember { mutableStateOf(false) }
+    var confirmSessionReset by remember { mutableStateOf(false) }
 
-    if (confirmReset) {
+    if (confirmSettingsReset) {
         AlertDialog(
-            onDismissRequest = { confirmReset = false },
+            onDismissRequest = { confirmSettingsReset = false },
+            title = { Text("Reset app settings?") },
+            text = {
+                Text("This restores runtime preferences, priorities, exclusions, and debug options to defaults. Your Twitch login stays signed in.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmSettingsReset = false
+                        onResetSettings()
+                    },
+                ) {
+                    Text("Reset Settings")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmSettingsReset = false }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
+    if (confirmSessionReset) {
+        AlertDialog(
+            onDismissRequest = { confirmSessionReset = false },
             title = { Text("Reset Twitch session?") },
             text = {
                 Text("This signs out, stops mining, and clears saved priorities and campaign exclusions on this device.")
@@ -64,7 +89,7 @@ fun SettingsScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        confirmReset = false
+                        confirmSessionReset = false
                         onResetSession()
                     },
                 ) {
@@ -72,7 +97,7 @@ fun SettingsScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { confirmReset = false }) {
+                TextButton(onClick = { confirmSessionReset = false }) {
                     Text("Cancel")
                 }
             },
@@ -153,26 +178,14 @@ fun SettingsScreen(
 
         SectionCard {
             SectionTitle(
-                title = "Game Priority Fallbacks",
-                subtitle = "Priority remains strict unless one of these fallbacks is enabled.",
+                title = "Game Fallback",
+                subtitle = "Use one ordered fallback path when preferred work is unavailable.",
             )
             ToggleRow(
-                title = "Use Auto Mode after priority completes",
-                subtitle = "Switch to Auto Mode for other eligible games after every prioritized game is complete.",
-                checked = settings.fallbackToAutoWhenPrioritizedComplete,
-                onCheckedChange = onFallbackToAutoWhenPrioritizedCompleteChanged,
-            )
-            ToggleRow(
-                title = "Use Auto Mode when priority has no live channel",
-                subtitle = "Switch to Auto Mode when prioritized games have work but no eligible live channel.",
-                checked = settings.fallbackToAutoWhenNoPrioritizedChannel,
-                onCheckedChange = onFallbackToAutoWhenNoPrioritizedChannelChanged,
-            )
-            ToggleRow(
-                title = "Try unlinked games after linked options",
-                subtitle = "Opt in to unlinked watch attempts only after prioritized and linked games are tried.",
-                checked = settings.allowWatchingUnlinkedGames,
-                onCheckedChange = onAllowWatchingUnlinkedGamesChanged,
+                title = "Fallback to other games",
+                subtitle = "After priority work is complete or unusable, try other linked games, then unlinked games. With no priority, linked Auto Mode still runs first.",
+                checked = settings.fallbackToOtherGames,
+                onCheckedChange = onFallbackToOtherGamesChanged,
             )
         }
 
@@ -210,20 +223,34 @@ fun SettingsScreen(
         }
 
         SectionCard {
-            SectionTitle("Debug", "Local diagnostics and session reset.")
+            SectionTitle("Debug", "Local diagnostics and reset controls.")
             ToggleRow(
                 title = "Verbose local logs",
                 subtitle = "Record additional local messages for troubleshooting long runs.",
                 checked = settings.debugLogging,
                 onCheckedChange = onDebugLoggingChanged,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                 OutlinedButton(
-                    onClick = { confirmReset = true },
-                    modifier = Modifier.weight(1f),
+                    onClick = { confirmSettingsReset = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !miningActive,
+                ) {
+                    Text("Reset Settings")
+                }
+                OutlinedButton(
+                    onClick = { confirmSessionReset = true },
+                    modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text("Reset Twitch Session")
                 }
+            }
+            if (miningActive) {
+                Text(
+                    text = "Stop mining before resetting app settings. Twitch Session reset can stop mining and sign out directly.",
+                    color = AppMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
         }
     }

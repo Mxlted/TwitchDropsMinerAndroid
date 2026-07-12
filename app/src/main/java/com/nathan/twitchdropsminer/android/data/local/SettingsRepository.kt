@@ -2,6 +2,7 @@ package com.nathan.twitchdropsminer.android.data.local
 
 import android.content.Context
 import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
@@ -50,6 +51,10 @@ class SettingsRepository(
                 monitorInForeground = true,
             )
         }
+    }
+
+    suspend fun resetSettings() {
+        dataStore.edit(SettingsPreferencesMapper::reset)
     }
 
     suspend fun toggleCampaignSelection(campaignId: String) {
@@ -286,11 +291,12 @@ object SettingsPreferencesMapper {
     val MonitorInForeground = booleanPreferencesKey("monitor_in_foreground")
     val RunInForeground = booleanPreferencesKey("run_in_foreground")
     val KeepActiveScreenMode = booleanPreferencesKey("keep_active_screen_mode")
-    val FallbackToAutoWhenPrioritizedComplete =
+    val FallbackToOtherGames = booleanPreferencesKey("fallback_to_other_games")
+    val LegacyFallbackToAutoWhenPrioritizedComplete =
         booleanPreferencesKey("fallback_to_auto_when_prioritized_complete")
-    val FallbackToAutoWhenNoPrioritizedChannel =
+    val LegacyFallbackToAutoWhenNoPrioritizedChannel =
         booleanPreferencesKey("fallback_to_auto_when_no_prioritized_channel")
-    val AllowWatchingUnlinkedGames = booleanPreferencesKey("allow_watching_unlinked_games")
+    val LegacyAllowWatchingUnlinkedGames = booleanPreferencesKey("allow_watching_unlinked_games")
     val ExcludedCampaignIds = stringSetPreferencesKey("excluded_campaign_ids")
     val SelectedCampaignIds = stringSetPreferencesKey("selected_campaign_ids")
     val SelectedGames = stringSetPreferencesKey("selected_games")
@@ -312,11 +318,8 @@ object SettingsPreferencesMapper {
                 ?: preferences[MonitorInForeground]
                 ?: true,
             keepActiveScreenMode = preferences[KeepActiveScreenMode] ?: false,
-            fallbackToAutoWhenPrioritizedComplete =
-                preferences[FallbackToAutoWhenPrioritizedComplete] ?: false,
-            fallbackToAutoWhenNoPrioritizedChannel =
-                preferences[FallbackToAutoWhenNoPrioritizedChannel] ?: false,
-            allowWatchingUnlinkedGames = preferences[AllowWatchingUnlinkedGames] ?: false,
+            fallbackToOtherGames = preferences[FallbackToOtherGames]
+                ?: legacyFallbackEnabled(preferences),
             excludedCampaignIds = preferences[ExcludedCampaignIds] ?: emptySet(),
             selectedCampaignIds = preferences[SelectedCampaignIds] ?: emptySet(),
             selectedGames = preferences[SelectedGames] ?: emptySet(),
@@ -325,7 +328,7 @@ object SettingsPreferencesMapper {
             advancedBackendMode = preferences[AdvancedBackendMode] ?: false,
         ).normalized()
 
-    fun write(preferences: androidx.datastore.preferences.core.MutablePreferences, settings: AppSettings) {
+    fun write(preferences: MutablePreferences, settings: AppSettings) {
         preferences[HasCompletedOnboarding] = settings.hasCompletedOnboarding
         preferences[BackendUrl] = settings.normalizedBackendUrl
         preferences[PollIntervalSeconds] = settings.pollIntervalSeconds
@@ -334,11 +337,10 @@ object SettingsPreferencesMapper {
         preferences[MonitorInForeground] = settings.monitorInForeground
         preferences[RunInForeground] = settings.runInForeground
         preferences[KeepActiveScreenMode] = settings.keepActiveScreenMode
-        preferences[FallbackToAutoWhenPrioritizedComplete] =
-            settings.fallbackToAutoWhenPrioritizedComplete
-        preferences[FallbackToAutoWhenNoPrioritizedChannel] =
-            settings.fallbackToAutoWhenNoPrioritizedChannel
-        preferences[AllowWatchingUnlinkedGames] = settings.allowWatchingUnlinkedGames
+        preferences[FallbackToOtherGames] = settings.fallbackToOtherGames
+        preferences.remove(LegacyFallbackToAutoWhenPrioritizedComplete)
+        preferences.remove(LegacyFallbackToAutoWhenNoPrioritizedChannel)
+        preferences.remove(LegacyAllowWatchingUnlinkedGames)
         preferences[ExcludedCampaignIds] = settings.excludedCampaignIds
         preferences[SelectedCampaignIds] = settings.selectedCampaignIds
         preferences[SelectedGames] = settings.selectedGames
@@ -346,6 +348,20 @@ object SettingsPreferencesMapper {
         preferences[DebugLogging] = settings.debugLogging
         preferences[AdvancedBackendMode] = settings.advancedBackendMode
     }
+
+    fun reset(preferences: MutablePreferences) {
+        val hasCompletedOnboarding = preferences[HasCompletedOnboarding] ?: false
+        preferences.clear()
+        write(
+            preferences,
+            AppSettings(hasCompletedOnboarding = hasCompletedOnboarding).normalized(),
+        )
+    }
+
+    private fun legacyFallbackEnabled(preferences: Preferences): Boolean =
+        preferences[LegacyFallbackToAutoWhenPrioritizedComplete] == true ||
+            preferences[LegacyFallbackToAutoWhenNoPrioritizedChannel] == true ||
+            preferences[LegacyAllowWatchingUnlinkedGames] == true
 
     private fun decodeGamePriority(value: String?): List<String> {
         if (value.isNullOrBlank()) {

@@ -13,9 +13,7 @@ data class AppSettings(
     val inventoryRefreshMinutes: Int = DefaultInventoryRefreshMinutes,
     val runInForeground: Boolean = true,
     val keepActiveScreenMode: Boolean = false,
-    val fallbackToAutoWhenPrioritizedComplete: Boolean = false,
-    val fallbackToAutoWhenNoPrioritizedChannel: Boolean = false,
-    val allowWatchingUnlinkedGames: Boolean = false,
+    val fallbackToOtherGames: Boolean = false,
     val excludedCampaignIds: Set<String> = emptySet(),
     // Legacy campaign IDs are retained so older saved preferences keep loading.
     val selectedCampaignIds: Set<String> = emptySet(),

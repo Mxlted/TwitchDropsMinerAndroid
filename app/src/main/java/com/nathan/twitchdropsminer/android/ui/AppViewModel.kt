@@ -190,27 +190,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         mutableState.update { it.copy(dimScreenActive = false) }
     }
 
-    fun setFallbackToAutoWhenPrioritizedComplete(enabled: Boolean) {
+    fun setFallbackToOtherGames(enabled: Boolean) {
         viewModelScope.launch {
             graph.settingsRepository.update {
-                it.copy(fallbackToAutoWhenPrioritizedComplete = enabled)
+                it.copy(fallbackToOtherGames = enabled)
             }
         }
     }
 
-    fun setFallbackToAutoWhenNoPrioritizedChannel(enabled: Boolean) {
+    fun resetSettings() {
         viewModelScope.launch {
-            graph.settingsRepository.update {
-                it.copy(fallbackToAutoWhenNoPrioritizedChannel = enabled)
-            }
-        }
-    }
-
-    fun setAllowWatchingUnlinkedGames(enabled: Boolean) {
-        viewModelScope.launch {
-            graph.settingsRepository.update {
-                it.copy(allowWatchingUnlinkedGames = enabled)
-            }
+            graph.settingsRepository.resetSettings()
+            graph.secureSessionStore.saveBackendSessionLabel("")
+            mutableState.update { it.copy(dimScreenActive = false) }
+            graph.logRepository.append("INFO", "App settings reset; Twitch session preserved")
         }
     }
 

@@ -10,7 +10,7 @@ It is intended as a mobile Android alternative to desktop Twitch Drops mining to
 * Campaign and drop tracking
 * Game priority list
 * Auto Mode when no priority games are selected
-* One optional fallback path from priority games to other linked games, then unlinked games with progress checks
+* One optional progress-aware fallback ladder across priority, linked, and unlinked campaign games
 * Foreground service for active mining
 * Persistent notification while mining is running
 * Validated-network detection with pause-and-resume recovery
@@ -99,11 +99,13 @@ The Campaigns screen lets you choose which games should be tried first.
 
 When priority games are selected, the app follows that order. If no games are prioritized, Auto Mode chooses from available eligible campaigns.
 
-The single **Fallback to other games** setting widens selection when priority work is complete or unusable for the current session. The miner tries prioritized linked games first, other linked games second, and unlinked games last. With no priority list, linked Auto Mode still runs first and the setting controls whether unlinked games are tried afterward.
+The single **Fallback to other games** setting enables a strict progress-aware ladder. The miner tries priority-set games first, then linked campaigns with at least one claimed drop, unlinked campaigns with at least one claimed drop, linked campaigns with Twitch-reported viewing progress, unlinked campaigns with viewing progress, fresh linked games, and finally fresh unlinked games. Empty stages and stages without an eligible live channel are skipped automatically. When no priority list is set, the ladder begins with the highest available progress-aware stage.
+
+While farming a fallback campaign, the runtime keeps that campaign and channel active while periodically checking for live streams in every higher stage. If a compatible higher-priority stream returns, the miner promotes to it; failed or empty background checks leave the current stream untouched.
 
 Campaigns can be marked **Exclude** from the Campaigns screen. Excluded campaigns stay visible in the Excluded view so they can be restored, but they are skipped by priority selection, Auto Mode, priority fallback, and unlinked-game probing.
 
-Fallback is off by default. When enabled, unlinked watching remains the final speculative stage: the app checks real Twitch progress after a short window and moves to the next unlinked game if progress does not increase.
+Fallback is off by default. When enabled, every unlinked watch attempt remains speculative: the app checks real Twitch progress after a short window and moves to the next candidate if progress does not increase.
 
 **Reset Settings** restores runtime preferences, priorities, exclusions, and debug options without clearing the encrypted Twitch login. **Reset Twitch Session** remains a separate sign-out action.
 

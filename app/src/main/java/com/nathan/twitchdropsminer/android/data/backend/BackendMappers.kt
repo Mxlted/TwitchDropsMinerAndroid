@@ -8,6 +8,7 @@ import com.nathan.twitchdropsminer.android.data.model.DropReward
 import com.nathan.twitchdropsminer.android.data.model.LoginSession
 import com.nathan.twitchdropsminer.android.data.model.LoginState
 import com.nathan.twitchdropsminer.android.data.model.MinerStatus
+import com.nathan.twitchdropsminer.android.data.model.inEarningOrder
 import java.time.Instant
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -51,7 +52,7 @@ class BackendMappers(
         val root = json.parseToJsonElement(payload).jsonObject
         return root.arrayOrEmpty("campaigns").mapNotNull { element ->
             val obj = element as? JsonObject ?: return@mapNotNull null
-            val drops = obj.arrayOrEmpty("drops").mapNotNull(::parseDrop)
+            val drops = obj.arrayOrEmpty("drops").mapNotNull(::parseDrop).inEarningOrder()
             Campaign(
                 id = obj.stringOrNull("id") ?: return@mapNotNull null,
                 name = obj.stringOrNull("name") ?: "Untitled campaign",

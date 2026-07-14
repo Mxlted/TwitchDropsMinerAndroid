@@ -17,6 +17,7 @@ import com.nathan.twitchdropsminer.android.data.model.RuntimePhase
 import com.nathan.twitchdropsminer.android.data.model.RuntimeSnapshot
 import com.nathan.twitchdropsminer.android.ui.theme.AppAccent
 import com.nathan.twitchdropsminer.android.ui.theme.AppMuted
+import kotlin.math.roundToInt
 
 @Composable
 fun ActivityScreen(snapshot: RuntimeSnapshot) {
@@ -52,11 +53,15 @@ fun ActivityScreen(snapshot: RuntimeSnapshot) {
                         fontWeight = FontWeight.SemiBold,
                     )
                     LinearProgressIndicator(
-                        progress = { drop.progress.coerceIn(0f, 1f) },
+                        progress = { drop.progressFraction },
                         modifier = Modifier.fillMaxWidth(),
                         color = AppAccent,
                     )
-                    Text("${drop.currentMinutes}/${drop.requiredMinutes}m watched", color = AppMuted)
+                    Text(
+                        "${(drop.progressFraction * 100f).roundToInt()}% • " +
+                            "${drop.watchedMinutes}/${drop.requiredMinutes}m watched",
+                        color = AppMuted,
+                    )
                     if (snapshot.phase == RuntimePhase.Claiming) {
                         Text(snapshot.currentTask, color = AppAccent)
                     }

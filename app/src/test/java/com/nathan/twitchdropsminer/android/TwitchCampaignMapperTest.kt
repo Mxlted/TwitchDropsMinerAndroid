@@ -51,6 +51,32 @@ class TwitchCampaignMapperTest {
         assertFalse(campaign.linkStatusKnown)
     }
 
+    @Test
+    fun campaignMapperNormalizesUnorderedDropsByRequiredTime() {
+        val campaign = TwitchCampaignMapper.campaignFromJson(
+            json.parseToJsonElement(
+                """
+                {
+                  "id": "campaign-1",
+                  "name": "Campaign",
+                  "status": "ACTIVE",
+                  "game": {"id": "game-1", "displayName": "Game"},
+                  "self": {"isAccountConnected": true},
+                  "timeBasedDrops": [
+                    {"id": "long", "name": "Long", "requiredMinutesWatched": 120, "preconditionDrops": []},
+                    {"id": "short", "name": "Short", "requiredMinutesWatched": 15, "preconditionDrops": []},
+                    {"id": "medium", "name": "Medium", "requiredMinutesWatched": 60, "preconditionDrops": []}
+                  ],
+                  "allow": {"channels": []}
+                }
+                """.trimIndent(),
+            ).jsonObject,
+            emptyMap(),
+        ) ?: error("campaign should parse")
+
+        assertEquals(listOf("short", "medium", "long"), campaign.drops.map { drop -> drop.id })
+    }
+
     private fun campaignJson(includeSelf: Boolean = true) = json.parseToJsonElement(
         """
         {

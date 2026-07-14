@@ -51,7 +51,7 @@ class MinerNotifications(private val context: Context) {
             if (snapshot.phase == RuntimePhase.Claiming) {
                 "Claiming ${it.name}"
             } else {
-                "${it.name} ${it.currentMinutes}/${it.requiredMinutes}m"
+                "${it.name} ${it.watchedMinutes}/${it.requiredMinutes}m"
             }
         }
         val text = snapshot.error ?: listOfNotNull(snapshot.currentTask, channel, drop)

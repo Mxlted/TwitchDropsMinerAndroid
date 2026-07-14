@@ -870,9 +870,7 @@ private data class GameCampaignSummary(
         if (required <= 0) {
             0f
         } else {
-            val current = drops.sumOf { drop ->
-                drop.currentMinutes.coerceIn(0, drop.requiredMinutes.coerceAtLeast(0))
-            }
+            val current = drops.sumOf { drop -> drop.watchedMinutes }
             current.toFloat() / required.toFloat()
         }
     }

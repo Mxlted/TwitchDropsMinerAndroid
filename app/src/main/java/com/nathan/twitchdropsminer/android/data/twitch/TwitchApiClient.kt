@@ -5,6 +5,7 @@ import com.nathan.twitchdropsminer.android.data.model.CampaignDrop
 import com.nathan.twitchdropsminer.android.data.model.Channel
 import com.nathan.twitchdropsminer.android.data.model.DropReward
 import com.nathan.twitchdropsminer.android.data.model.StoredTwitchSession
+import com.nathan.twitchdropsminer.android.data.model.inEarningOrder
 import java.io.IOException
 import java.time.Instant
 import java.util.Base64
@@ -753,9 +754,9 @@ enum class TwitchOperation(
 private fun JsonObject.toCampaign(claimedBenefits: Map<String, Instant>): Campaign {
     val now = Instant.now()
     val game = this["game"].asObjectOrNull()
-    val drops = this["timeBasedDrops"].asArray().mapNotNull { drop ->
-        drop.asObjectOrNull()?.toCampaignDrop(claimedBenefits)
-    }
+    val drops = this["timeBasedDrops"].asArray()
+        .mapNotNull { drop -> drop.asObjectOrNull()?.toCampaignDrop(claimedBenefits) }
+        .inEarningOrder()
     val startsAt = this["startAt"].asInstantOrNull()
     val endsAt = this["endAt"].asInstantOrNull()
     val status = this["status"].asStringOrNull()

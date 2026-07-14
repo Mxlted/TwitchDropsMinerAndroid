@@ -183,7 +183,7 @@ fun SettingsScreen(
             )
             ToggleRow(
                 title = "Fallback to other games",
-                subtitle = "After priority work is complete or unusable, try other linked games, then unlinked games. With no priority, linked Auto Mode still runs first.",
+                subtitle = "Priority games first, then linked/unlinked campaigns with claimed drops, linked/unlinked campaigns with viewing progress, and finally fresh linked/unlinked games.",
                 checked = settings.fallbackToOtherGames,
                 onCheckedChange = onFallbackToOtherGamesChanged,
             )

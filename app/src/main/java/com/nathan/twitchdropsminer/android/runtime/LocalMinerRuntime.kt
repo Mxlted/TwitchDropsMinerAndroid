@@ -13,6 +13,7 @@ import com.nathan.twitchdropsminer.android.data.model.RuntimeActivity
 import com.nathan.twitchdropsminer.android.data.model.RuntimePhase
 import com.nathan.twitchdropsminer.android.data.model.RuntimeSnapshot
 import com.nathan.twitchdropsminer.android.data.model.StoredTwitchSession
+import com.nathan.twitchdropsminer.android.data.model.inEarningOrder
 import com.nathan.twitchdropsminer.android.data.network.NetworkStatusProvider
 import com.nathan.twitchdropsminer.android.data.twitch.CurrentDropProgress
 import com.nathan.twitchdropsminer.android.data.twitch.TwitchApi
@@ -22,9 +23,11 @@ import java.time.Duration
 import java.time.Instant
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -45,6 +48,7 @@ private val MinUnlinkedProgressCheckDelay: Duration = Duration.ofMinutes(2)
 private val MaxUnlinkedProgressCheckDelay: Duration = Duration.ofMinutes(5)
 private val UnlinkedNoProgressRetryDelay: Duration = Duration.ofMinutes(30)
 private val FailedChannelRetryDelay: Duration = Duration.ofMinutes(15)
+private val HigherPriorityChannelCheckInterval: Duration = Duration.ofMinutes(2)
 
 class LocalMinerRuntime(
     private val settingsRepository: SettingsRepository,
@@ -494,6 +498,8 @@ class LocalMinerRuntime(
             var currentCampaign: Campaign = work.campaign
             var currentChannel = work.channel.copy(watching = true)
             var channels = work.channels
+            var currentMode = work.mode
+            var currentDropId = currentCampaign.activeDrop()?.id
             val refreshAt = Instant.now().plus(Duration.ofMinutes(settings.inventoryRefreshMinutes.toLong()))
             var unlinkedProgressProbe = currentCampaign.startUnlinkedProgressProbe(settings)
             if (unlinkedProgressProbe != null) {
@@ -510,10 +516,68 @@ class LocalMinerRuntime(
             }
             var consecutiveRejectedWatchEvents = 0
             var transientWatchFailures = 0
+            var nextHigherPriorityCheckAt = Instant.now().plus(HigherPriorityChannelCheckInterval)
+            var higherPriorityCheck: Deferred<SelectedCampaignWork?>? = null
             while (
                 currentCoroutineContext().isActive &&
                 Instant.now().isBefore(refreshAt)
             ) {
+                val completedHigherPriorityCheck = higherPriorityCheck?.takeIf { check -> check.isCompleted }
+                if (completedHigherPriorityCheck != null) {
+                    higherPriorityCheck = null
+                    val promotion = completedHigherPriorityCheck.await()
+                    val promotionStillHigher = promotion != null &&
+                        CampaignPrioritySelector.higherPriorityDecisions(
+                            settings = settings,
+                            campaigns = campaignSnapshot.withoutSkippedUnlinkedCampaigns(
+                                unlinkedNoProgressSkips.keys,
+                            ),
+                            currentMode = currentMode,
+                        ).any { decision ->
+                            decision.mode == promotion.mode &&
+                                decision.candidates.any { candidate -> candidate.id == promotion.campaign.id }
+                        }
+                    if (promotion != null && promotionStillHigher) {
+                        val previousCampaign = currentCampaign
+                        val previousChannel = currentChannel
+                        currentCampaign = promotion.campaign
+                        currentChannel = promotion.channel.copy(watching = true)
+                        channels = promotion.channels
+                        currentMode = promotion.mode
+                        currentDropId = currentCampaign.activeDrop()?.id
+                        unlinkedProgressProbe = currentCampaign.startUnlinkedProgressProbe(settings)
+                        consecutiveRejectedWatchEvents = 0
+                        transientWatchFailures = 0
+                        nextHigherPriorityCheckAt = Instant.now().plus(HigherPriorityChannelCheckInterval)
+                        updateSnapshot(
+                            RuntimePhase.Watching,
+                            "Higher-priority stream available; watching ${currentCampaign.gameName}",
+                        ) {
+                            it.copy(
+                                campaigns = markSelected(campaignSnapshot, settings),
+                                channels = channels.markWatching(currentChannel.id),
+                                currentChannel = currentChannel,
+                                activeCampaign = currentCampaign,
+                                activeDrop = currentCampaign.activeDrop(currentDropId),
+                                progressSummary = listOf(currentCampaign).progressSummary(),
+                                error = null,
+                            )
+                        }
+                        appendActivity(
+                            RuntimePhase.Watching,
+                            "Switched to higher-priority stream",
+                            "${previousCampaign.gameName} on ${previousChannel.name} → " +
+                                "${currentCampaign.gameName} on ${currentChannel.name}.",
+                        )
+                        if (unlinkedProgressProbe != null) {
+                            appendActivity(
+                                RuntimePhase.Watching,
+                                "Checking unlinked drop progress",
+                                "Will verify real Twitch progress in about ${unlinkedProgressProbe.checkWindowLabel}.",
+                            )
+                        }
+                    }
+                }
                 val resumedAfterNetworkLoss = awaitUsableNetwork()
                 if (!Instant.now().isBefore(refreshAt)) {
                     break
@@ -542,7 +606,7 @@ class LocalMinerRuntime(
                                 channels = channels.markWatching(currentChannel.id),
                                 currentChannel = currentChannel.copy(watching = true),
                                 activeCampaign = currentCampaign,
-                                activeDrop = currentCampaign.nextEarnableDrop(),
+                                activeDrop = currentCampaign.activeDrop(currentDropId),
                                 channelSearchInProgress = false,
                                 error = null,
                             )
@@ -588,7 +652,7 @@ class LocalMinerRuntime(
                                     channels = channels.markWatching(currentChannel.id),
                                     currentChannel = currentChannel,
                                     activeCampaign = currentCampaign,
-                                    activeDrop = currentCampaign.nextEarnableDrop(),
+                                    activeDrop = currentCampaign.activeDrop(currentDropId),
                                     channelSearchInProgress = false,
                                     error = null,
                                 )
@@ -602,8 +666,9 @@ class LocalMinerRuntime(
                     }
                 }
                 val latestSettings = settingsRepository.settings.first()
+                settings = latestSettings
+                currentMode = CampaignPrioritySelector.modeForCampaign(settings, currentCampaign) ?: currentMode
                 if (ActiveWatchGuard.shouldStopForExcludedCampaign(latestSettings, currentCampaign)) {
-                    settings = latestSettings
                     updateSnapshot(RuntimePhase.Idle, "Campaign excluded; stopping current watch") {
                         it.copy(
                             campaigns = markSelected(campaignSnapshot, settings),
@@ -623,7 +688,7 @@ class LocalMinerRuntime(
                     break
                 }
 
-                val activeDrop = currentCampaign.nextEarnableDrop()
+                val activeDrop = currentCampaign.activeDrop(currentDropId)
                 if (activeDrop == null) {
                     appendActivity(RuntimePhase.Idle, "Campaign completed", currentCampaign.name)
                     break
@@ -692,13 +757,31 @@ class LocalMinerRuntime(
                         continue
                     }
                 }
-                val progressedCampaign = updateProgress(
+                val progressRefresh = updateProgress(
                     session = session,
                     campaign = currentCampaign,
                     channel = currentChannel,
                 )
-                currentCampaign = progressedCampaign
+                currentCampaign = progressRefresh.campaign
+                currentDropId = progressRefresh.reportedDropId ?: currentDropId
+                val refreshedActiveDrop = currentCampaign.activeDrop(currentDropId)
+                currentDropId = refreshedActiveDrop?.id
                 campaignSnapshot = campaignSnapshot.replaceCampaign(currentCampaign)
+                currentMode = CampaignPrioritySelector.modeForCampaign(settings, currentCampaign) ?: currentMode
+                updateSnapshot(
+                    RuntimePhase.Watching,
+                    currentCampaign.watchingTask(currentChannel, unlinkedProgressProbe),
+                ) {
+                    it.copy(
+                        campaigns = markSelected(campaignSnapshot, settings),
+                        channels = channels.markWatching(currentChannel.id),
+                        currentChannel = currentChannel,
+                        activeCampaign = currentCampaign,
+                        activeDrop = refreshedActiveDrop,
+                        progressSummary = listOf(currentCampaign).progressSummary(),
+                        error = null,
+                    )
+                }
 
                 val probe = unlinkedProgressProbe
                 var shouldMoveToNextUnlinked = false
@@ -726,7 +809,7 @@ class LocalMinerRuntime(
                                     channels = channels.map { channel -> channel.copy(watching = false) },
                                     currentChannel = null,
                                     activeCampaign = currentCampaign,
-                                    activeDrop = currentCampaign.nextEarnableDrop(),
+                                    activeDrop = currentCampaign.activeDrop(currentDropId),
                                     progressSummary = listOf(currentCampaign).progressSummary(),
                                     error = null,
                                 )
@@ -755,6 +838,69 @@ class LocalMinerRuntime(
                     }
                     currentCampaign = claimDrop(session, currentCampaign, claimable)
                     campaignSnapshot = campaignSnapshot.replaceCampaign(currentCampaign)
+                    currentMode = CampaignPrioritySelector.modeForCampaign(settings, currentCampaign) ?: currentMode
+                    val claimedSuccessfully = currentCampaign.drops
+                        .firstOrNull { drop -> drop.id == claimable.id }
+                        ?.isClaimed == true
+                    if (claimedSuccessfully) {
+                        currentDropId = null
+                        val nextActiveDrop = currentCampaign.activeDrop()
+                        currentDropId = nextActiveDrop?.id
+                        if (nextActiveDrop == null) {
+                            updateSnapshot(RuntimePhase.Idle, "Campaign completed") {
+                                it.copy(
+                                    campaigns = markSelected(campaignSnapshot, settings),
+                                    channels = channels.map { channel -> channel.copy(watching = false) },
+                                    currentChannel = null,
+                                    activeCampaign = currentCampaign,
+                                    activeDrop = null,
+                                    progressSummary = listOf(currentCampaign).progressSummary(),
+                                    error = null,
+                                )
+                            }
+                            appendActivity(RuntimePhase.Idle, "Campaign completed", currentCampaign.name)
+                            break
+                        }
+                        updateSnapshot(
+                            RuntimePhase.Watching,
+                            currentCampaign.watchingTask(currentChannel, unlinkedProgressProbe),
+                        ) {
+                            it.copy(
+                                campaigns = markSelected(campaignSnapshot, settings),
+                                channels = channels.markWatching(currentChannel.id),
+                                currentChannel = currentChannel,
+                                activeCampaign = currentCampaign,
+                                activeDrop = nextActiveDrop,
+                                progressSummary = listOf(currentCampaign).progressSummary(),
+                                error = null,
+                            )
+                        }
+                    }
+                }
+
+                val now = Instant.now()
+                if (higherPriorityCheck == null && !now.isBefore(nextHigherPriorityCheckAt)) {
+                    pruneExpiredUnlinkedSkips(now)
+                    pruneExpiredChannelSkips(now)
+                    val promotionCampaigns = campaignSnapshot.withoutSkippedUnlinkedCampaigns(
+                        unlinkedNoProgressSkips.keys,
+                    )
+                    val higherPriorityDecisions = CampaignPrioritySelector.higherPriorityDecisions(
+                        settings = settings,
+                        campaigns = promotionCampaigns,
+                        currentMode = currentMode,
+                    )
+                    if (higherPriorityDecisions.isNotEmpty()) {
+                        val skippedChannelIds = failedChannelSkips.keys.toSet()
+                        higherPriorityCheck = CoroutineScope(currentCoroutineContext()).async {
+                            findHigherPriorityWork(
+                                session = session,
+                                decisions = higherPriorityDecisions,
+                                skippedChannelIds = skippedChannelIds,
+                            )
+                        }
+                    }
+                    nextHigherPriorityCheckAt = now.plus(HigherPriorityChannelCheckInterval)
                 }
 
                 withTimeoutOrNull(settings.watchIntervalSeconds * 1000L) {
@@ -763,6 +909,7 @@ class LocalMinerRuntime(
                     }
                 }
             }
+            higherPriorityCheck?.cancel()
         }
     }
 
@@ -810,7 +957,7 @@ class LocalMinerRuntime(
                 continue
             }
             var currentCampaign = updatedCampaigns.firstOrNull { it.id == campaign.id } ?: campaign
-            for (drop in currentCampaign.drops) {
+            for (drop in currentCampaign.drops.inEarningOrder()) {
                 if (drop.isClaimed || (!drop.hasCompletedProgress && !drop.canClaim)) {
                     continue
                 }
@@ -962,7 +1109,7 @@ class LocalMinerRuntime(
                 it.copy(
                     campaigns = markSelected(campaignSnapshot, settings),
                     activeCampaign = candidate,
-                    activeDrop = candidate.nextEarnableDrop(),
+                    activeDrop = candidate.activeDrop(),
                     progressSummary = campaignSnapshot.progressSummary(),
                     selectedCampaignIds = settings.selectedCampaignIds,
                     error = null,
@@ -976,7 +1123,12 @@ class LocalMinerRuntime(
                 skippedChannelIds = failedChannelSkips.keys,
             )
             if (selectedChannel != null) {
-                return SelectedCampaignWork(candidate, selectedChannel, channels)
+                return SelectedCampaignWork(
+                    campaign = candidate,
+                    channel = selectedChannel,
+                    channels = channels,
+                    mode = decision.mode,
+                )
             }
 
             updateSnapshot(RuntimePhase.Idle, "No eligible live channel for ${candidate.gameName}") {
@@ -991,6 +1143,36 @@ class LocalMinerRuntime(
                 "No eligible live channel",
                 decision.mode.noChannelDetail(candidate),
             )
+        }
+        return null
+    }
+
+    private suspend fun findHigherPriorityWork(
+        session: StoredTwitchSession,
+        decisions: List<CampaignCandidateDecision.Try>,
+        skippedChannelIds: Set<Long>,
+    ): SelectedCampaignWork? {
+        for (decision in decisions) {
+            for (candidate in decision.candidates) {
+                val channels = try {
+                    twitchApiClient.fetchEligibleChannels(session, candidate)
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Throwable) {
+                    error.throwIfInvalidToken()
+                    return null
+                }
+                val selectedChannel = EligibleChannelSelector.select(
+                    channels = channels,
+                    skippedChannelIds = skippedChannelIds,
+                ) ?: continue
+                return SelectedCampaignWork(
+                    campaign = candidate,
+                    channel = selectedChannel,
+                    channels = channels,
+                    mode = decision.mode,
+                )
+            }
         }
         return null
     }
@@ -1118,7 +1300,7 @@ class LocalMinerRuntime(
         session: StoredTwitchSession,
         campaign: Campaign,
         channel: Channel,
-    ): Campaign {
+    ): CampaignProgressRefresh {
         val progress = runCatchingCancellable {
             twitchApiClient.currentDrop(session, channel.id)
         }.onFailure {
@@ -1126,7 +1308,12 @@ class LocalMinerRuntime(
         }.getOrNull()
         if (progress != null) {
             when (val applied = campaign.applyTwitchProgress(progress)) {
-                is TwitchProgressUpdate.Updated -> return applied.campaign
+                is TwitchProgressUpdate.Updated -> {
+                    return CampaignProgressRefresh(
+                        campaign = applied.campaign,
+                        reportedDropId = progress.dropId,
+                    )
+                }
                 is TwitchProgressUpdate.UnexpectedDrop -> {
                     appendActivity(
                         RuntimePhase.Watching,
@@ -1134,11 +1321,11 @@ class LocalMinerRuntime(
                         "Twitch reported drop ${progress.dropId} (${progress.currentMinutes}m) on " +
                             "${channel.name}, which is not part of ${campaign.gameName} (${campaign.id}).",
                     )
-                    return campaign
+                    return CampaignProgressRefresh(campaign)
                 }
             }
         }
-        return campaign
+        return CampaignProgressRefresh(campaign)
     }
 
     private suspend fun claimDrop(
@@ -1207,7 +1394,7 @@ class LocalMinerRuntime(
         session: StoredTwitchSession,
         campaign: Campaign,
     ): CampaignDrop? {
-        return campaign.drops.firstOrNull { drop ->
+        return campaign.drops.inEarningOrder().firstOrNull { drop ->
             !drop.isClaimed &&
                 (drop.canClaim || drop.hasCompletedProgress) &&
                 dropClaimHandler.suppressionFor(session, campaign, drop) == null
@@ -1301,15 +1488,6 @@ class LocalMinerRuntime(
         }
         logRepository.append(if (phase == RuntimePhase.Error) "ERROR" else "INFO", entry.toLine())
     }
-}
-
-private fun Campaign.nextEarnableDrop(): CampaignDrop? {
-    val claimed = drops.filter { it.isClaimed }.map { it.id }.toSet()
-    return drops.firstOrNull { drop ->
-        !drop.isClaimed &&
-            drop.currentMinutes < drop.requiredMinutes &&
-            drop.preconditionDropIds.all { it in claimed }
-    } ?: drops.firstOrNull { it.canClaim }
 }
 
 private fun Campaign.startUnlinkedProgressProbe(settings: AppSettings): UnlinkedProgressProbe? =
@@ -1449,42 +1627,16 @@ internal object CampaignPrioritySelector {
 
     fun initialDecision(settings: AppSettings, campaigns: List<Campaign>): CampaignCandidateDecision {
         val selectableCampaigns = campaigns.withoutExcludedCampaigns(settings)
+        orderedDecisions(settings, selectableCampaigns).firstOrNull()?.let { return it }
+
         if (!settings.hasGamePriority) {
-            val autoCandidates = autoCandidates(settings, selectableCampaigns)
-            if (autoCandidates.isNotEmpty()) {
-                return CampaignCandidateDecision.Try(
-                    mode = CampaignSelectionMode.Auto,
-                    candidates = autoCandidates,
-                    task = "Auto Mode selecting campaign",
-                    detail = "No game priority is set.",
-                )
-            }
-            return if (settings.fallbackToOtherGames) {
-                unlinkedDecision(
-                    settings = settings,
-                    campaigns = selectableCampaigns,
-                    task = "Trying unlinked games",
-                    detail = "Auto Mode exhausted linked campaigns for this session.",
-                )
-            } else {
-                null
-            } ?: CampaignCandidateDecision.Idle(
+            return CampaignCandidateDecision.Idle(
                 task = "No available campaign can be mined",
                 detail = if (settings.fallbackToOtherGames) {
                     "No linked or unlinked campaign has usable work for this session."
                 } else {
                     "Auto Mode found no linked active campaign with remaining or claimable drops."
                 },
-            )
-        }
-
-        val priorityCandidates = prioritizedCandidates(settings, selectableCampaigns)
-        if (priorityCandidates.isNotEmpty()) {
-            return CampaignCandidateDecision.Try(
-                mode = CampaignSelectionMode.Prioritized,
-                candidates = priorityCandidates,
-                task = "Selecting prioritized campaign",
-                detail = "Trying prioritized games in order.",
             )
         }
 
@@ -1511,28 +1663,9 @@ internal object CampaignPrioritySelector {
             }
         }
 
-        val fallbackCandidates = autoFallbackCandidates(settings, selectableCampaigns)
-        val fallbackDetail = when {
-            prioritiesComplete -> "All prioritized games are complete."
-            prioritiesExcluded -> "Prioritized campaigns are excluded by user choice."
-            else -> "Prioritized games have no usable linked campaign for this session."
-        }
-        if (fallbackCandidates.isNotEmpty()) {
-            return CampaignCandidateDecision.Try(
-                mode = CampaignSelectionMode.LinkedFallback,
-                candidates = fallbackCandidates,
-                task = "Trying linked games outside priority",
-                detail = fallbackDetail,
-            )
-        }
-        return unlinkedDecision(
-            settings = settings,
-            campaigns = selectableCampaigns,
-            task = "Trying unlinked games",
-            detail = "$fallbackDetail No other linked campaign has usable work.",
-        ) ?: CampaignCandidateDecision.Idle(
+        return CampaignCandidateDecision.Idle(
             task = "No fallback campaign can be mined",
-            detail = "Priority and other linked or unlinked campaigns have no usable work for this session.",
+            detail = "Priority and all linked or unlinked fallback stages have no usable work for this session.",
             activityTitle = "Fallback idle",
         )
     }
@@ -1540,41 +1673,8 @@ internal object CampaignPrioritySelector {
     fun afterNoPrioritizedChannelDecision(
         settings: AppSettings,
         campaigns: List<Campaign>,
-    ): CampaignCandidateDecision {
-        val selectableCampaigns = campaigns.withoutExcludedCampaigns(settings)
-        if (!settings.hasGamePriority) {
-            return noChannelDecision(CampaignSelectionMode.Auto)
-        }
-        if (!settings.fallbackToOtherGames) {
-            return CampaignCandidateDecision.Idle(
-                task = "No prioritized games have eligible live channels",
-                detail = "Fallback to other games is disabled.",
-                activityTitle = "Priority mining idle",
-                retry = CampaignIdleRetry.WatchInterval,
-            )
-        }
-
-        val autoCandidates = autoFallbackCandidates(settings, selectableCampaigns)
-        if (autoCandidates.isNotEmpty()) {
-            return CampaignCandidateDecision.Try(
-                mode = CampaignSelectionMode.LinkedFallback,
-                candidates = autoCandidates,
-                task = "No prioritized live channel; trying other linked games",
-                detail = "No prioritized games currently have eligible live channels.",
-            )
-        }
-        return unlinkedDecision(
-            settings = settings,
-            campaigns = selectableCampaigns,
-            task = "Linked games exhausted; trying unlinked games",
-            detail = "Prioritized and other linked campaigns have no eligible live channel for this session.",
-        ) ?: CampaignCandidateDecision.Idle(
-            task = "No fallback campaign has an eligible live channel",
-            detail = "Priority, other linked, and unlinked campaigns have no usable channel for this session.",
-            activityTitle = "Fallback idle",
-            retry = CampaignIdleRetry.WatchInterval,
-        )
-    }
+    ): CampaignCandidateDecision =
+        afterNoChannelDecision(settings, campaigns, CampaignSelectionMode.Prioritized)
 
     fun afterNoChannelDecision(
         settings: AppSettings,
@@ -1582,28 +1682,18 @@ internal object CampaignPrioritySelector {
         mode: CampaignSelectionMode,
     ): CampaignCandidateDecision {
         val selectableCampaigns = campaigns.withoutExcludedCampaigns(settings)
-        return when (mode) {
-            CampaignSelectionMode.Prioritized ->
-                afterNoPrioritizedChannelDecision(settings, selectableCampaigns)
-
-            CampaignSelectionMode.Auto ->
-                unlinkedDecision(
-                    settings = settings,
-                    campaigns = selectableCampaigns,
-                    task = "Trying unlinked games",
-                    detail = "Linked Auto Mode campaigns had no eligible live channel.",
-                ) ?: noChannelDecision(mode)
-
-            CampaignSelectionMode.LinkedFallback ->
-                unlinkedDecision(
-                    settings = settings,
-                    campaigns = selectableCampaigns,
-                    task = "Linked games exhausted; trying unlinked games",
-                    detail = "Prioritized and other linked campaigns had no eligible live channel.",
-                ) ?: noChannelDecision(mode)
-
-            CampaignSelectionMode.Unlinked -> noChannelDecision(mode)
+        if (!settings.fallbackToOtherGames) {
+            return noChannelDecision(mode)
         }
+
+        return orderedDecisions(settings, selectableCampaigns)
+            .firstOrNull { decision -> decision.mode.priorityRank > mode.priorityRank }
+            ?: CampaignCandidateDecision.Idle(
+                task = "No fallback game has an eligible live channel",
+                detail = "Priority and all linked or unlinked fallback stages currently have no eligible live channel.",
+                activityTitle = "Fallback idle",
+                retry = CampaignIdleRetry.WatchInterval,
+            )
     }
 
     fun noChannelDecision(mode: CampaignSelectionMode): CampaignCandidateDecision.Idle =
@@ -1622,17 +1712,15 @@ internal object CampaignPrioritySelector {
                 retry = CampaignIdleRetry.WatchInterval,
             )
 
-            CampaignSelectionMode.LinkedFallback -> CampaignCandidateDecision.Idle(
-                task = "Linked fallback found no eligible live channel",
-                detail = "Prioritized, other linked, and unlinked campaigns currently have no eligible live channel.",
-                activityTitle = "Fallback idle",
-                retry = CampaignIdleRetry.WatchInterval,
-            )
-
+            CampaignSelectionMode.LinkedClaimedProgress,
+            CampaignSelectionMode.UnlinkedClaimedProgress,
+            CampaignSelectionMode.LinkedViewingProgress,
+            CampaignSelectionMode.UnlinkedViewingProgress,
+            CampaignSelectionMode.LinkedFallback,
             CampaignSelectionMode.Unlinked -> CampaignCandidateDecision.Idle(
-                task = "No unlinked games have eligible live channels",
-                detail = "Unlinked game watching is enabled, but no unlinked game has an eligible live channel.",
-                activityTitle = "Unlinked games idle",
+                task = "No fallback game has an eligible live channel",
+                detail = "Priority and all linked or unlinked fallback stages currently have no eligible live channel.",
+                activityTitle = "Fallback idle",
                 retry = CampaignIdleRetry.WatchInterval,
             )
         }
@@ -1640,30 +1728,67 @@ internal object CampaignPrioritySelector {
     fun prioritizedCandidates(settings: AppSettings, campaigns: List<Campaign>): List<Campaign> {
         val earnableCampaigns = campaigns
             .withoutExcludedCampaigns(settings)
-            .filter { it.canEarnLocally && !it.isLocallyComplete }
+            .filter { campaign ->
+                !campaign.isLocallyComplete &&
+                    (
+                        campaign.canEarnLocally ||
+                            (settings.fallbackToOtherGames && campaign.canTryUnlinkedLocally)
+                        )
+            }
         return settings.selectedGamePriority.flatMap { gameName ->
             earnableCampaigns.filter { campaign ->
                 campaign.gameName.equals(gameName, ignoreCase = true)
-            }.sortedBy { it.remainingMinutes }
+            }.sortedWith(campaignProgressComparator)
         }
     }
 
     fun autoFallbackCandidates(settings: AppSettings, campaigns: List<Campaign>): List<Campaign> =
-        autoCandidates(settings, campaigns)
-            .filter { campaign -> !settings.isGamePrioritized(campaign.gameName) }
+        fallbackCandidates(settings, campaigns)
+            .filter { campaign -> campaign.linked }
 
     fun unlinkedCandidates(settings: AppSettings, campaigns: List<Campaign>): List<Campaign> =
         if (settings.fallbackToOtherGames) {
-            campaigns
-                .withoutExcludedCampaigns(settings)
-                .filter { it.canTryUnlinkedLocally && !it.isLocallyComplete }
-                .sortedWith(
-                    compareBy<Campaign> { settings.gamePriorityIndex(it.gameName) ?: Int.MAX_VALUE }
-                        .thenBy { it.remainingMinutes },
-                )
+            fallbackCandidates(settings, campaigns)
+                .filter { campaign -> campaign.canTryUnlinkedLocally }
+                .sortedWith(campaignProgressComparator)
         } else {
             emptyList()
         }
+
+    fun higherPriorityDecisions(
+        settings: AppSettings,
+        campaigns: List<Campaign>,
+        currentMode: CampaignSelectionMode,
+    ): List<CampaignCandidateDecision.Try> =
+        if (settings.fallbackToOtherGames) {
+            orderedDecisions(settings, campaigns)
+                .filter { decision -> decision.mode.priorityRank < currentMode.priorityRank }
+        } else {
+            emptyList()
+        }
+
+    fun modeForCampaign(settings: AppSettings, campaign: Campaign): CampaignSelectionMode? {
+        if (settings.isGamePrioritized(campaign.gameName)) {
+            return CampaignSelectionMode.Prioritized
+        }
+        if (!settings.fallbackToOtherGames) {
+            return if (campaign.canEarnLocally) CampaignSelectionMode.Auto else null
+        }
+        return when {
+            campaign.linked && campaign.hasClaimedDropProgress ->
+                CampaignSelectionMode.LinkedClaimedProgress
+            campaign.canTryUnlinkedLocally && campaign.hasClaimedDropProgress ->
+                CampaignSelectionMode.UnlinkedClaimedProgress
+            campaign.linked && campaign.hasViewingProgress ->
+                CampaignSelectionMode.LinkedViewingProgress
+            campaign.canTryUnlinkedLocally && campaign.hasViewingProgress ->
+                CampaignSelectionMode.UnlinkedViewingProgress
+            campaign.linked && settings.hasGamePriority -> CampaignSelectionMode.LinkedFallback
+            campaign.linked -> CampaignSelectionMode.Auto
+            campaign.canTryUnlinkedLocally -> CampaignSelectionMode.Unlinked
+            else -> null
+        }
+    }
 
     fun prioritizedGamesComplete(settings: AppSettings, campaigns: List<Campaign>): Boolean {
         if (!settings.hasGamePriority) {
@@ -1702,27 +1827,136 @@ internal object CampaignPrioritySelector {
         }
     }
 
+    private fun orderedDecisions(
+        settings: AppSettings,
+        campaigns: List<Campaign>,
+    ): List<CampaignCandidateDecision.Try> {
+        val selectableCampaigns = campaigns.withoutExcludedCampaigns(settings)
+        val decisions = mutableListOf<CampaignCandidateDecision.Try>()
+        if (settings.hasGamePriority) {
+            prioritizedCandidates(settings, selectableCampaigns)
+                .takeIf { candidates -> candidates.isNotEmpty() }
+                ?.let { candidates ->
+                    decisions += CampaignCandidateDecision.Try(
+                        mode = CampaignSelectionMode.Prioritized,
+                        candidates = candidates,
+                        task = "Selecting prioritized campaign",
+                        detail = "Trying all prioritized games in saved order.",
+                    )
+                }
+        }
+
+        if (!settings.fallbackToOtherGames) {
+            if (!settings.hasGamePriority) {
+                autoCandidates(settings, selectableCampaigns)
+                    .takeIf { candidates -> candidates.isNotEmpty() }
+                    ?.let { candidates ->
+                        decisions += CampaignCandidateDecision.Try(
+                            mode = CampaignSelectionMode.Auto,
+                            candidates = candidates,
+                            task = "Auto Mode selecting campaign",
+                            detail = "No game priority is set.",
+                        )
+                    }
+            }
+            return decisions
+        }
+
+        val fallbackCandidates = fallbackCandidates(settings, selectableCampaigns)
+        val linkedClaimed = fallbackCandidates.filter { campaign ->
+            campaign.linked && campaign.hasClaimedDropProgress
+        }
+        val unlinkedClaimed = fallbackCandidates.filter { campaign ->
+            campaign.canTryUnlinkedLocally && campaign.hasClaimedDropProgress
+        }
+        val linkedViewing = fallbackCandidates.filter { campaign ->
+            campaign.linked && !campaign.hasClaimedDropProgress && campaign.hasViewingProgress
+        }
+        val unlinkedViewing = fallbackCandidates.filter { campaign ->
+            campaign.canTryUnlinkedLocally && !campaign.hasClaimedDropProgress && campaign.hasViewingProgress
+        }
+        val linkedFresh = fallbackCandidates.filter { campaign ->
+            campaign.linked && !campaign.hasClaimedDropProgress && !campaign.hasViewingProgress
+        }
+        val unlinkedFresh = fallbackCandidates.filter { campaign ->
+            campaign.canTryUnlinkedLocally && !campaign.hasClaimedDropProgress && !campaign.hasViewingProgress
+        }
+
+        decisions.addStage(
+            mode = CampaignSelectionMode.LinkedClaimedProgress,
+            candidates = linkedClaimed,
+            task = "Trying linked campaigns with claimed-drop progress",
+            detail = "No higher-priority stream is currently available.",
+        )
+        decisions.addStage(
+            mode = CampaignSelectionMode.UnlinkedClaimedProgress,
+            candidates = unlinkedClaimed,
+            task = "Trying unlinked campaigns with claimed-drop progress",
+            detail = "Linked campaigns with claimed-drop progress have no eligible stream.",
+        )
+        decisions.addStage(
+            mode = CampaignSelectionMode.LinkedViewingProgress,
+            candidates = linkedViewing,
+            task = "Trying linked campaigns with viewing progress",
+            detail = "Campaigns with claimed-drop progress have no eligible stream.",
+        )
+        decisions.addStage(
+            mode = CampaignSelectionMode.UnlinkedViewingProgress,
+            candidates = unlinkedViewing,
+            task = "Trying unlinked campaigns with viewing progress",
+            detail = "Linked campaigns with viewing progress have no eligible stream.",
+        )
+        decisions.addStage(
+            mode = if (settings.hasGamePriority) {
+                CampaignSelectionMode.LinkedFallback
+            } else {
+                CampaignSelectionMode.Auto
+            },
+            candidates = linkedFresh,
+            task = if (settings.hasGamePriority) {
+                "Trying linked games outside priority"
+            } else {
+                "Auto Mode selecting linked game"
+            },
+            detail = "No linked or unlinked campaign with existing progress has an eligible stream.",
+        )
+        decisions.addStage(
+            mode = CampaignSelectionMode.Unlinked,
+            candidates = unlinkedFresh,
+            task = "Trying unlinked games",
+            detail = "All higher-priority fallback stages have no eligible stream.",
+        )
+        return decisions
+    }
+
     private fun autoCandidates(settings: AppSettings, campaigns: List<Campaign>): List<Campaign> =
         campaigns
             .withoutExcludedCampaigns(settings)
             .filter { it.canEarnLocally && !it.isLocallyComplete }
 
-    private fun unlinkedDecision(
-        settings: AppSettings,
-        campaigns: List<Campaign>,
+    private fun fallbackCandidates(settings: AppSettings, campaigns: List<Campaign>): List<Campaign> =
+        campaigns
+            .withoutExcludedCampaigns(settings)
+            .filter { campaign ->
+                !campaign.isLocallyComplete &&
+                    (campaign.canEarnLocally || campaign.canTryUnlinkedLocally) &&
+                    (!settings.hasGamePriority || !settings.isGamePrioritized(campaign.gameName))
+            }
+
+    private fun MutableList<CampaignCandidateDecision.Try>.addStage(
+        mode: CampaignSelectionMode,
+        candidates: List<Campaign>,
         task: String,
         detail: String,
-    ): CampaignCandidateDecision.Try? {
-        return unlinkedCandidates(settings, campaigns)
-            .takeIf { it.isNotEmpty() }
-            ?.let {
-                CampaignCandidateDecision.Try(
-                    mode = CampaignSelectionMode.Unlinked,
-                    candidates = it,
-                    task = task,
-                    detail = detail,
-                )
-            }
+    ) {
+        if (candidates.isNotEmpty()) {
+            this += CampaignCandidateDecision.Try(
+                mode = mode,
+                candidates = candidates.sortedWith(campaignProgressComparator),
+                task = task,
+                detail = detail,
+            )
+        }
     }
 
 }
@@ -1746,6 +1980,10 @@ internal sealed class CampaignCandidateDecision {
 internal enum class CampaignSelectionMode {
     Auto,
     Prioritized,
+    LinkedClaimedProgress,
+    UnlinkedClaimedProgress,
+    LinkedViewingProgress,
+    UnlinkedViewingProgress,
     LinkedFallback,
     Unlinked,
 }
@@ -1756,15 +1994,43 @@ internal enum class CampaignIdleRetry {
 }
 
 private val CampaignSelectionMode.isLinkedFallback: Boolean
-    get() = this == CampaignSelectionMode.LinkedFallback
+    get() = when (this) {
+        CampaignSelectionMode.LinkedClaimedProgress,
+        CampaignSelectionMode.LinkedViewingProgress,
+        CampaignSelectionMode.LinkedFallback -> true
+
+        else -> false
+    }
 
 private val CampaignSelectionMode.isUnlinked: Boolean
-    get() = this == CampaignSelectionMode.Unlinked
+    get() = when (this) {
+        CampaignSelectionMode.UnlinkedClaimedProgress,
+        CampaignSelectionMode.UnlinkedViewingProgress,
+        CampaignSelectionMode.Unlinked -> true
+
+        else -> false
+    }
+
+private val CampaignSelectionMode.priorityRank: Int
+    get() = when (this) {
+        CampaignSelectionMode.Prioritized -> 0
+        CampaignSelectionMode.LinkedClaimedProgress -> 1
+        CampaignSelectionMode.UnlinkedClaimedProgress -> 2
+        CampaignSelectionMode.LinkedViewingProgress -> 3
+        CampaignSelectionMode.UnlinkedViewingProgress -> 4
+        CampaignSelectionMode.Auto,
+        CampaignSelectionMode.LinkedFallback -> 5
+        CampaignSelectionMode.Unlinked -> 6
+    }
 
 private fun CampaignSelectionMode.selectionTask(candidate: Campaign): String =
     when (this) {
         CampaignSelectionMode.Auto -> "Auto Mode selected ${candidate.gameName}"
         CampaignSelectionMode.Prioritized -> "Selected ${candidate.gameName}"
+        CampaignSelectionMode.LinkedClaimedProgress -> "Selected linked claimed-progress game ${candidate.gameName}"
+        CampaignSelectionMode.UnlinkedClaimedProgress -> "Trying unlinked claimed-progress game ${candidate.gameName}"
+        CampaignSelectionMode.LinkedViewingProgress -> "Selected linked viewing-progress game ${candidate.gameName}"
+        CampaignSelectionMode.UnlinkedViewingProgress -> "Trying unlinked viewing-progress game ${candidate.gameName}"
         CampaignSelectionMode.LinkedFallback -> "Linked fallback selected ${candidate.gameName}"
         CampaignSelectionMode.Unlinked -> "Trying unlinked game ${candidate.gameName}"
     }
@@ -1773,6 +2039,14 @@ private fun CampaignSelectionMode.noChannelDetail(candidate: Campaign): String =
     when (this) {
         CampaignSelectionMode.Auto -> "${candidate.gameName}; trying next Auto Mode campaign."
         CampaignSelectionMode.Prioritized -> "${candidate.gameName}; trying next prioritized campaign."
+        CampaignSelectionMode.LinkedClaimedProgress ->
+            "${candidate.gameName}; trying the next linked campaign with claimed-drop progress."
+        CampaignSelectionMode.UnlinkedClaimedProgress ->
+            "${candidate.gameName}; trying the next unlinked campaign with claimed-drop progress."
+        CampaignSelectionMode.LinkedViewingProgress ->
+            "${candidate.gameName}; trying the next linked campaign with viewing progress."
+        CampaignSelectionMode.UnlinkedViewingProgress ->
+            "${candidate.gameName}; trying the next unlinked campaign with viewing progress."
         CampaignSelectionMode.LinkedFallback ->
             "${candidate.gameName}; trying next linked fallback campaign."
         CampaignSelectionMode.Unlinked -> "${candidate.gameName}; trying next unlinked game."
@@ -1814,6 +2088,7 @@ private data class SelectedCampaignWork(
     val campaign: Campaign,
     val channel: Channel,
     val channels: List<Channel>,
+    val mode: CampaignSelectionMode,
 )
 
 private data class CompatibleChannelSearch(
@@ -1831,6 +2106,11 @@ private data class CampaignLoadResult(
     val campaigns: List<Campaign>,
     val settings: AppSettings,
     val failure: String? = null,
+)
+
+private data class CampaignProgressRefresh(
+    val campaign: Campaign,
+    val reportedDropId: String? = null,
 )
 
 private sealed interface WatchAttemptResult {
@@ -1890,6 +2170,27 @@ private val Campaign.isLocallyComplete: Boolean
     get() = drops.isNotEmpty() && drops.all { drop ->
         drop.isClaimed || drop.hasCompletedProgress
     }
+
+private val Campaign.hasClaimedDropProgress: Boolean
+    get() = claimedDrops > 0 || drops.any { drop -> drop.isClaimed }
+
+private val Campaign.hasViewingProgress: Boolean
+    get() = drops.any { drop ->
+        !drop.isClaimed &&
+            drop.currentMinutes > 0 &&
+            !drop.hasCompletedProgress
+    }
+
+private val Campaign.progressPriorityRank: Int
+    get() = when {
+        hasClaimedDropProgress -> 0
+        hasViewingProgress -> 1
+        else -> 2
+    }
+
+private val campaignProgressComparator =
+    compareBy<Campaign> { campaign -> campaign.progressPriorityRank }
+        .thenBy { campaign -> campaign.remainingMinutes }
 
 private val Campaign.unlinkedProbeMinutes: Int
     get() = drops.sumOf { it.currentMinutes.coerceAtLeast(0) }

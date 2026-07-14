@@ -287,7 +287,7 @@ class RuntimeStateTest {
 
         assertEquals("No fallback campaign can be mined", (decision as CampaignCandidateDecision.Idle).task)
         assertEquals(
-            "Priority and other linked or unlinked campaigns have no usable work for this session.",
+            "Priority and all linked or unlinked fallback stages have no usable work for this session.",
             decision.detail,
         )
     }
@@ -400,11 +400,11 @@ class RuntimeStateTest {
         )
 
         assertEquals(
-            "No fallback campaign has an eligible live channel",
+            "No fallback game has an eligible live channel",
             (decision as CampaignCandidateDecision.Idle).task,
         )
         assertEquals(
-            "Priority, other linked, and unlinked campaigns have no usable channel for this session.",
+            "Priority and all linked or unlinked fallback stages currently have no eligible live channel.",
             decision.detail,
         )
     }
@@ -468,7 +468,7 @@ class RuntimeStateTest {
     }
 
     @Test
-    fun prioritizedUnlinkedGameCanBeTriedWhenExplicitlyEnabled() {
+    fun prioritizedUnlinkedGameIsTriedInTheTopPriorityStageWhenEnabled() {
         val unlinked = unlinkedCampaign("campaign-1", "Priority Game")
         val settings = AppSettings(
             selectedGamePriority = listOf("Priority Game"),
@@ -477,12 +477,12 @@ class RuntimeStateTest {
 
         val decision = CampaignPrioritySelector.initialDecision(settings, listOf(unlinked))
 
-        assertEquals(CampaignSelectionMode.Unlinked, (decision as CampaignCandidateDecision.Try).mode)
+        assertEquals(CampaignSelectionMode.Prioritized, (decision as CampaignCandidateDecision.Try).mode)
         assertEquals(listOf("campaign-1"), decision.candidates.map { it.id })
     }
 
     @Test
-    fun otherLinkedGamesAreTriedBeforePrioritizedUnlinkedGames() {
+    fun prioritizedUnlinkedGamesAreTriedBeforeOtherLinkedGames() {
         val prioritizedUnlinked = unlinkedCampaign("campaign-1", "Priority Game")
         val otherLinked = earnableCampaign("campaign-2", "Linked Game")
         val settings = AppSettings(
@@ -492,22 +492,22 @@ class RuntimeStateTest {
         val campaigns = listOf(prioritizedUnlinked, otherLinked)
 
         val initialDecision = CampaignPrioritySelector.initialDecision(settings, campaigns)
-        val afterLinkedNoChannel = CampaignPrioritySelector.afterNoChannelDecision(
+        val afterPriorityNoChannel = CampaignPrioritySelector.afterNoChannelDecision(
             settings,
             campaigns,
-            CampaignSelectionMode.LinkedFallback,
+            CampaignSelectionMode.Prioritized,
         )
 
         assertEquals(
-            CampaignSelectionMode.LinkedFallback,
+            CampaignSelectionMode.Prioritized,
             (initialDecision as CampaignCandidateDecision.Try).mode,
         )
-        assertEquals(listOf("campaign-2"), initialDecision.candidates.map { it.id })
+        assertEquals(listOf("campaign-1"), initialDecision.candidates.map { it.id })
         assertEquals(
-            CampaignSelectionMode.Unlinked,
-            (afterLinkedNoChannel as CampaignCandidateDecision.Try).mode,
+            CampaignSelectionMode.LinkedFallback,
+            (afterPriorityNoChannel as CampaignCandidateDecision.Try).mode,
         )
-        assertEquals(listOf("campaign-1"), afterLinkedNoChannel.candidates.map { it.id })
+        assertEquals(listOf("campaign-2"), afterPriorityNoChannel.candidates.map { it.id })
     }
 
     @Test
@@ -545,7 +545,7 @@ class RuntimeStateTest {
     }
 
     @Test
-    fun autoFallbackThenUnlinkedKeepsPriorityOrderWithinUnlinkedCandidates() {
+    fun fallbackDoesNotRetryPrioritizedUnlinkedGamesAfterTheirTopStage() {
         val linked = earnableCampaign("campaign-1", "Linked Priority")
         val prioritizedUnlinked = unlinkedCampaign("campaign-2", "Unlinked Priority", requiredMinutes = 30)
         val outsidePriority = unlinkedCampaign("campaign-3", "Outside Priority", requiredMinutes = 10)
@@ -561,7 +561,7 @@ class RuntimeStateTest {
         )
 
         assertEquals(CampaignSelectionMode.Unlinked, (decision as CampaignCandidateDecision.Try).mode)
-        assertEquals(listOf("campaign-2", "campaign-3"), decision.candidates.map { it.id })
+        assertEquals(listOf("campaign-3"), decision.candidates.map { it.id })
     }
 
     @Test
@@ -602,6 +602,94 @@ class RuntimeStateTest {
             (afterLinkedNoChannel as CampaignCandidateDecision.Try).mode,
         )
         assertEquals(listOf("campaign-3"), afterLinkedNoChannel.candidates.map { it.id })
+    }
+
+    @Test
+    fun fallbackLadderUsesProgressAndLinkStateInTheRequestedOrder() {
+        val prioritized = unlinkedCampaign("campaign-priority", "Priority Game")
+        val linkedClaimed = claimedProgressCampaign("campaign-linked-claimed", "Linked Claimed", linked = true)
+        val unlinkedClaimed = claimedProgressCampaign("campaign-unlinked-claimed", "Unlinked Claimed", linked = false)
+        val linkedViewing = earnableCampaign("campaign-linked-viewing", "Linked Viewing", currentMinutes = 5)
+        val unlinkedViewing = unlinkedCampaign("campaign-unlinked-viewing", "Unlinked Viewing", currentMinutes = 5)
+        val linkedFresh = earnableCampaign("campaign-linked-fresh", "Linked Fresh")
+        val unlinkedFresh = unlinkedCampaign("campaign-unlinked-fresh", "Unlinked Fresh")
+        val settings = AppSettings(
+            selectedGamePriority = listOf("Priority Game"),
+            fallbackToOtherGames = true,
+        ).normalized()
+        val campaigns = listOf(
+            unlinkedFresh,
+            linkedViewing,
+            unlinkedClaimed,
+            linkedFresh,
+            prioritized,
+            unlinkedViewing,
+            linkedClaimed,
+        )
+        var decision = CampaignPrioritySelector.initialDecision(settings, campaigns)
+        val stages = mutableListOf<Pair<CampaignSelectionMode, List<String>>>()
+
+        repeat(7) {
+            val stage = decision as CampaignCandidateDecision.Try
+            stages += stage.mode to stage.candidates.map { campaign -> campaign.id }
+            decision = CampaignPrioritySelector.afterNoChannelDecision(
+                settings = settings,
+                campaigns = campaigns,
+                mode = stage.mode,
+            )
+        }
+
+        assertEquals(
+            listOf(
+                CampaignSelectionMode.Prioritized to listOf("campaign-priority"),
+                CampaignSelectionMode.LinkedClaimedProgress to listOf("campaign-linked-claimed"),
+                CampaignSelectionMode.UnlinkedClaimedProgress to listOf("campaign-unlinked-claimed"),
+                CampaignSelectionMode.LinkedViewingProgress to listOf("campaign-linked-viewing"),
+                CampaignSelectionMode.UnlinkedViewingProgress to listOf("campaign-unlinked-viewing"),
+                CampaignSelectionMode.LinkedFallback to listOf("campaign-linked-fresh"),
+                CampaignSelectionMode.Unlinked to listOf("campaign-unlinked-fresh"),
+            ),
+            stages,
+        )
+        assertTrue(decision is CampaignCandidateDecision.Idle)
+    }
+
+    @Test
+    fun backgroundPromotionPlannerChecksEveryHigherStageInOrder() {
+        val prioritized = earnableCampaign("campaign-priority", "Priority Game")
+        val linkedClaimed = claimedProgressCampaign("campaign-linked-claimed", "Linked Claimed", linked = true)
+        val unlinkedClaimed = claimedProgressCampaign("campaign-unlinked-claimed", "Unlinked Claimed", linked = false)
+        val linkedViewing = earnableCampaign("campaign-linked-viewing", "Linked Viewing", currentMinutes = 5)
+        val current = unlinkedCampaign("campaign-current", "Current Unlinked", currentMinutes = 5)
+        val settings = AppSettings(
+            selectedGamePriority = listOf("Priority Game"),
+            fallbackToOtherGames = true,
+        ).normalized()
+
+        val decisions = CampaignPrioritySelector.higherPriorityDecisions(
+            settings = settings,
+            campaigns = listOf(current, linkedViewing, unlinkedClaimed, linkedClaimed, prioritized),
+            currentMode = CampaignSelectionMode.UnlinkedViewingProgress,
+        )
+
+        assertEquals(
+            listOf(
+                CampaignSelectionMode.Prioritized,
+                CampaignSelectionMode.LinkedClaimedProgress,
+                CampaignSelectionMode.UnlinkedClaimedProgress,
+                CampaignSelectionMode.LinkedViewingProgress,
+            ),
+            decisions.map { decision -> decision.mode },
+        )
+        assertEquals(
+            listOf(
+                "campaign-priority",
+                "campaign-linked-claimed",
+                "campaign-unlinked-claimed",
+                "campaign-linked-viewing",
+            ),
+            decisions.flatMap { decision -> decision.candidates }.map { campaign -> campaign.id },
+        )
     }
 
     @Test
@@ -718,6 +806,32 @@ private fun expiredIncompleteCampaign(id: String, gameName: String): Campaign =
         active = false,
         expired = true,
     )
+
+private fun claimedProgressCampaign(
+    id: String,
+    gameName: String,
+    linked: Boolean,
+): Campaign {
+    val campaign = earnableCampaign(id, gameName)
+    val claimedDrop = CampaignDrop(
+        id = "$id-claimed-drop",
+        name = "Claimed Drop",
+        currentMinutes = 30,
+        requiredMinutes = 30,
+        progress = 1f,
+        isClaimed = true,
+        canClaim = false,
+        rewards = emptyList(),
+    )
+    return campaign.copy(
+        linked = linked,
+        linkStatusKnown = true,
+        linkUrl = if (linked) null else "https://example.test/link",
+        claimedDrops = 1,
+        totalDrops = 2,
+        drops = listOf(claimedDrop) + campaign.drops,
+    )
+}
 
 private fun unlinkedCampaign(
     id: String,

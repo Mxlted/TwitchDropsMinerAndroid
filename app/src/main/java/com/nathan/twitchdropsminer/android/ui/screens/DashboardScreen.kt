@@ -38,6 +38,7 @@ import com.nathan.twitchdropsminer.android.ui.theme.AppAccent
 import com.nathan.twitchdropsminer.android.ui.theme.AppError
 import com.nathan.twitchdropsminer.android.ui.theme.AppMuted
 import com.nathan.twitchdropsminer.android.ui.theme.AppText
+import kotlin.math.roundToInt
 
 @Composable
 fun DashboardScreen(
@@ -54,10 +55,14 @@ fun DashboardScreen(
     onEnterDimScreen: () -> Unit,
 ) {
     var showChannelPicker by rememberSaveable { mutableStateOf(false) }
-    val activelyWorking = snapshot.phase !in setOf(
-        RuntimePhase.Stopped,
-        RuntimePhase.Idle,
-        RuntimePhase.Error,
+    val showBusyIndicator = isRefreshing || snapshot.phase in setOf(
+        RuntimePhase.Connecting,
+        RuntimePhase.Fetching,
+        RuntimePhase.Authenticating,
+        RuntimePhase.LoadingInventory,
+        RuntimePhase.SelectingCampaign,
+        RuntimePhase.FindingChannel,
+        RuntimePhase.Claiming,
     )
     val currentChannel = snapshot.watchingChannel
     val compatibleChannels = (listOfNotNull(currentChannel) + snapshot.channels)
@@ -104,7 +109,7 @@ fun DashboardScreen(
             trailing = { StatusPill(snapshot.phase.uiLabel(), phase = snapshot.phase) },
         )
 
-        if (isRefreshing || activelyWorking) {
+        if (showBusyIndicator) {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = AppAccent)
         }
 
@@ -124,6 +129,10 @@ fun DashboardScreen(
             DetailRow("Current phase", snapshot.phase.uiLabel())
             DetailRow("Selected campaign", snapshot.activeCampaign.selectedCampaignLabel())
             DetailRow("Selected channel", snapshot.watchingChannel?.name ?: "None")
+            DetailRow(
+                if (snapshot.phase == RuntimePhase.Claiming) "Claiming drop" else "Farming drop",
+                snapshot.activeDrop?.name ?: "None",
+            )
             DetailRow("Next action", snapshot.nextActionLabel())
             DetailRow(
                 label = snapshot.reasonLabel(),
@@ -177,17 +186,23 @@ fun DashboardScreen(
             } else {
                 snapshot.activeDrop.let { drop ->
                     Text(
+                        text = if (snapshot.phase == RuntimePhase.Claiming) "Claiming now" else "Farming now",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = AppMuted,
+                    )
+                    Text(
                         text = drop.name,
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.SemiBold,
                     )
                     LinearProgressIndicator(
-                        progress = { drop.progress.coerceIn(0f, 1f) },
+                        progress = { drop.progressFraction },
                         modifier = Modifier.fillMaxWidth(),
                         color = AppAccent,
                     )
                     Text(
-                        text = "${drop.currentMinutes}/${drop.requiredMinutes}m watched, " +
+                        text = "${(drop.progressFraction * 100f).roundToInt()}% • " +
+                            "${drop.watchedMinutes}/${drop.requiredMinutes}m watched • " +
                             "${drop.remainingMinutes}m remaining",
                         color = AppMuted,
                     )

@@ -41,6 +41,7 @@ import com.nathan.twitchdropsminer.android.data.model.AppSettings
 import com.nathan.twitchdropsminer.android.data.model.Campaign
 import com.nathan.twitchdropsminer.android.data.model.CampaignDrop
 import com.nathan.twitchdropsminer.android.data.model.RuntimeSnapshot
+import com.nathan.twitchdropsminer.android.data.model.watchProgressFraction
 import com.nathan.twitchdropsminer.android.ui.theme.AppAccent
 import com.nathan.twitchdropsminer.android.ui.theme.AppMuted
 import com.nathan.twitchdropsminer.android.ui.theme.AppSurfaceHigh
@@ -865,15 +866,7 @@ private data class GameCampaignSummary(
             .joinToString { it.name.ifBlank { "Unnamed campaign" } } +
             if (campaigns.size > 2) " +${campaigns.size - 2} more" else ""
     }
-    val progress: Float = run {
-        val required = drops.sumOf { it.requiredMinutes.coerceAtLeast(0) }
-        if (required <= 0) {
-            0f
-        } else {
-            val current = drops.sumOf { drop -> drop.watchedMinutes }
-            current.toFloat() / required.toFloat()
-        }
-    }
+    val progress: Float = drops.watchProgressFraction()
     val priorityStatusLabel: String =
         priorityIndex?.let { "Priority ${it + 1}" } ?: "Auto candidate"
     val exclusionStatusLabel: String? = when {

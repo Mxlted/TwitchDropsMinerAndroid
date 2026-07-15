@@ -188,6 +188,32 @@ class RuntimeStateTest {
     }
 
     @Test
+    fun disablingFallbackMakesActiveFallbackWorkIneligibleForReselection() {
+        val linkedFallback = earnableCampaign("campaign-1", "Fallback Game")
+        val prioritizedUnlinked = unlinkedCampaign("campaign-2", "Priority Game")
+        val enabled = AppSettings(
+            selectedGamePriority = listOf("Priority Game"),
+            fallbackToOtherGames = true,
+        ).normalized()
+        val disabled = enabled.copy(fallbackToOtherGames = false).normalized()
+
+        assertEquals(
+            CampaignSelectionMode.LinkedFallback,
+            CampaignPrioritySelector.modeForCampaign(enabled, linkedFallback),
+        )
+        assertEquals(
+            CampaignSelectionMode.Prioritized,
+            CampaignPrioritySelector.modeForCampaign(enabled, prioritizedUnlinked),
+        )
+        assertNull(CampaignPrioritySelector.modeForCampaign(disabled, linkedFallback))
+        assertNull(CampaignPrioritySelector.modeForCampaign(disabled, prioritizedUnlinked))
+        assertEquals(
+            CampaignSelectionMode.Auto,
+            CampaignPrioritySelector.modeForCampaign(AppSettings(), linkedFallback),
+        )
+    }
+
+    @Test
     fun completePrioritizedGamesFallBackToLinkedGamesOnlyWhenEnabled() {
         val complete = completedCampaign("campaign-1", "Selected Game")
         val other = earnableCampaign("campaign-2", "Other Game")
@@ -652,6 +678,51 @@ class RuntimeStateTest {
             stages,
         )
         assertTrue(decision is CampaignCandidateDecision.Idle)
+    }
+
+    @Test
+    fun fallbackSkipsAStageWhoseRemainingDropsHaveCyclicPrerequisites() {
+        val claimed = CampaignDrop(
+            id = "claimed",
+            name = "Claimed",
+            currentMinutes = 10,
+            requiredMinutes = 10,
+            progress = 1f,
+            isClaimed = true,
+            canClaim = false,
+            rewards = emptyList(),
+        )
+        val firstBlocked = CampaignDrop(
+            id = "first-blocked",
+            name = "First blocked",
+            currentMinutes = 0,
+            requiredMinutes = 10,
+            progress = 0f,
+            isClaimed = false,
+            canClaim = false,
+            rewards = emptyList(),
+            preconditionDropIds = listOf("second-blocked"),
+        )
+        val secondBlocked = firstBlocked.copy(
+            id = "second-blocked",
+            name = "Second blocked",
+            preconditionDropIds = listOf("first-blocked"),
+        )
+        val blockedLinked = earnableCampaign("campaign-blocked", "Blocked Linked").copy(
+            claimedDrops = 1,
+            totalDrops = 3,
+            drops = listOf(claimed, firstBlocked, secondBlocked),
+        )
+        val freshUnlinked = unlinkedCampaign("campaign-unlinked", "Fresh Unlinked")
+        val settings = AppSettings(fallbackToOtherGames = true).normalized()
+
+        val decision = CampaignPrioritySelector.initialDecision(
+            settings,
+            listOf(blockedLinked, freshUnlinked),
+        ) as CampaignCandidateDecision.Try
+
+        assertEquals(CampaignSelectionMode.Unlinked, decision.mode)
+        assertEquals(listOf("campaign-unlinked"), decision.candidates.map { campaign -> campaign.id })
     }
 
     @Test

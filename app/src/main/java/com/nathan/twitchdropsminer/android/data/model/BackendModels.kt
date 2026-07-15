@@ -105,11 +105,7 @@ data class Campaign(
     val selected: Boolean = false,
 ) {
     val progress: Float
-        get() = if (drops.isEmpty()) {
-            0f
-        } else {
-            drops.map { drop -> drop.progressFraction }.average().toFloat()
-        }
+        get() = drops.watchProgressFraction()
 
     val statusLabel: String
         get() = when {
@@ -138,25 +134,63 @@ data class Campaign(
 
     fun activeDrop(preferredDropId: String? = null): CampaignDrop? {
         val orderedDrops = drops.inEarningOrder()
+        val knownDropIds = drops.mapTo(mutableSetOf()) { drop -> drop.id }
         val claimedDropIds = drops
             .asSequence()
             .filter { drop -> drop.isClaimed }
             .map { drop -> drop.id }
             .toSet()
+        val preferredDrop = preferredDropId?.let { id ->
+            drops.firstOrNull { drop -> drop.id == id && !drop.isClaimed }
+        }
+        if (preferredDrop != null) {
+            return preferredDrop
+        }
         val farmableDrops = orderedDrops.filter { drop ->
             !drop.isClaimed &&
                 drop.requiredMinutes > 0 &&
                 !drop.hasCompletedProgress &&
-                drop.preconditionDropIds.all { prerequisiteId -> prerequisiteId in claimedDropIds }
+                drop.hasSatisfiedPrerequisites(knownDropIds, claimedDropIds)
         }
-        return preferredDropId
-            ?.let { id -> farmableDrops.firstOrNull { drop -> drop.id == id } }
-            ?: farmableDrops.firstOrNull { drop -> drop.watchedMinutes > 0 }
+        return farmableDrops.firstOrNull { drop -> drop.watchedMinutes > 0 }
             ?: farmableDrops.firstOrNull()
             ?: orderedDrops.firstOrNull { drop ->
-                !drop.isClaimed && (drop.canClaim || drop.hasCompletedProgress)
+                !drop.isClaimed &&
+                    (drop.canClaim || drop.hasCompletedProgress) &&
+                    drop.hasSatisfiedPrerequisites(knownDropIds, claimedDropIds)
             }
     }
+
+    fun isDropUnlocked(drop: CampaignDrop): Boolean {
+        val knownDropIds = drops.mapTo(mutableSetOf()) { candidate -> candidate.id }
+        val claimedDropIds = drops
+            .asSequence()
+            .filter { candidate -> candidate.isClaimed }
+            .map { candidate -> candidate.id }
+            .toSet()
+        return drop.hasSatisfiedPrerequisites(knownDropIds, claimedDropIds)
+    }
+
+    fun claimableDropsInEarningOrder(): List<CampaignDrop> {
+        val knownDropIds = drops.mapTo(mutableSetOf()) { candidate -> candidate.id }
+        val claimedDropIds = drops
+            .asSequence()
+            .filter { candidate -> candidate.isClaimed }
+            .map { candidate -> candidate.id }
+            .toSet()
+        return drops.inEarningOrder().filter { drop ->
+            !drop.isClaimed &&
+                (drop.canClaim || drop.hasCompletedProgress) &&
+                drop.hasSatisfiedPrerequisites(knownDropIds, claimedDropIds)
+        }
+    }
+}
+
+private fun CampaignDrop.hasSatisfiedPrerequisites(
+    knownDropIds: Set<String>,
+    claimedDropIds: Set<String>,
+): Boolean = preconditionDropIds.none { prerequisiteId ->
+    prerequisiteId in knownDropIds && prerequisiteId !in claimedDropIds
 }
 
 fun List<CampaignDrop>.inEarningOrder(): List<CampaignDrop> {
@@ -186,6 +220,17 @@ fun List<CampaignDrop>.inEarningOrder(): List<CampaignDrop> {
         remaining.remove(next)
     }
     return ordered
+}
+
+fun List<CampaignDrop>.watchProgressFraction(): Float {
+    val requiredMinutes = sumOf { drop -> drop.requiredMinutes.coerceAtLeast(0) }
+    if (requiredMinutes <= 0) {
+        return 0f
+    }
+    val watchedMinutes = sumOf { drop ->
+        if (drop.requiredMinutes > 0) drop.watchedMinutes else 0
+    }
+    return watchedMinutes.toFloat() / requiredMinutes.toFloat()
 }
 
 data class Channel(

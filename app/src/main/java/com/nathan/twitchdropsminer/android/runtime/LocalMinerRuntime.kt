@@ -517,7 +517,7 @@ class LocalMinerRuntime(
             var consecutiveRejectedWatchEvents = 0
             var transientWatchFailures = 0
             var nextHigherPriorityCheckAt = Instant.now().plus(HigherPriorityChannelCheckInterval)
-            var higherPriorityCheck: Deferred<SelectedCampaignWork?>? = null
+            var higherPriorityCheck: Deferred<Result<SelectedCampaignWork?>>? = null
             while (
                 currentCoroutineContext().isActive &&
                 Instant.now().isBefore(refreshAt)
@@ -525,7 +525,8 @@ class LocalMinerRuntime(
                 val completedHigherPriorityCheck = higherPriorityCheck?.takeIf { check -> check.isCompleted }
                 if (completedHigherPriorityCheck != null) {
                     higherPriorityCheck = null
-                    val promotion = completedHigherPriorityCheck.await()
+                    settings = settingsRepository.settings.first()
+                    val promotion = completedHigherPriorityCheck.await().getOrThrow()
                     val promotionStillHigher = promotion != null &&
                         CampaignPrioritySelector.higherPriorityDecisions(
                             settings = settings,
@@ -667,7 +668,6 @@ class LocalMinerRuntime(
                 }
                 val latestSettings = settingsRepository.settings.first()
                 settings = latestSettings
-                currentMode = CampaignPrioritySelector.modeForCampaign(settings, currentCampaign) ?: currentMode
                 if (ActiveWatchGuard.shouldStopForExcludedCampaign(latestSettings, currentCampaign)) {
                     updateSnapshot(RuntimePhase.Idle, "Campaign excluded; stopping current watch") {
                         it.copy(
@@ -687,28 +687,58 @@ class LocalMinerRuntime(
                     )
                     break
                 }
+                val configuredMode = CampaignPrioritySelector.modeForCampaign(settings, currentCampaign)
+                if (configuredMode == null) {
+                    updateSnapshot(RuntimePhase.Idle, "Settings changed; reselecting campaign") {
+                        it.copy(
+                            campaigns = markSelected(campaignSnapshot, settings),
+                            channels = channels.map { channel -> channel.copy(watching = false) },
+                            currentChannel = null,
+                            activeCampaign = null,
+                            activeDrop = null,
+                            progressSummary = campaignSnapshot.progressSummary(),
+                            error = null,
+                        )
+                    }
+                    appendActivity(
+                        RuntimePhase.Idle,
+                        "Current campaign no longer matches mining settings",
+                        "${currentCampaign.gameName}; stopping current watch and reselecting.",
+                    )
+                    break
+                }
+                currentMode = configuredMode
 
                 val activeDrop = currentCampaign.activeDrop(currentDropId)
                 if (activeDrop == null) {
+                    updateSnapshot(RuntimePhase.Idle, "Campaign completed") {
+                        it.copy(
+                            campaigns = markSelected(campaignSnapshot, settings),
+                            channels = channels.map { channel -> channel.copy(watching = false) },
+                            currentChannel = null,
+                            activeCampaign = currentCampaign,
+                            activeDrop = null,
+                            progressSummary = listOf(currentCampaign).progressSummary(),
+                            error = null,
+                        )
+                    }
                     appendActivity(RuntimePhase.Idle, "Campaign completed", currentCampaign.name)
                     break
                 }
 
-                updateSnapshot(
-                    RuntimePhase.Watching,
-                    currentCampaign.watchingTask(currentChannel, unlinkedProgressProbe),
-                ) {
-                    it.copy(
-                        campaigns = markSelected(campaignSnapshot, settings),
-                        channels = channels.map { channel ->
-                            channel.copy(watching = channel.id == currentChannel.id)
-                        },
-                        currentChannel = currentChannel,
-                        activeCampaign = currentCampaign,
-                        activeDrop = activeDrop,
-                        progressSummary = listOf(currentCampaign).progressSummary(),
-                        error = null,
-                    )
+                val watchingTask = currentCampaign.watchingTask(currentChannel, unlinkedProgressProbe)
+                if (!_snapshot.value.matchesActiveWatch(currentCampaign, currentChannel, activeDrop, watchingTask)) {
+                    updateSnapshot(RuntimePhase.Watching, watchingTask) {
+                        it.copy(
+                            campaigns = markSelected(campaignSnapshot, settings),
+                            channels = channels.markWatching(currentChannel.id),
+                            currentChannel = currentChannel,
+                            activeCampaign = currentCampaign,
+                            activeDrop = activeDrop,
+                            progressSummary = listOf(currentCampaign).progressSummary(),
+                            error = null,
+                        )
+                    }
                 }
 
                 val watchAttempt = sendWatch(session, currentChannel)
@@ -875,6 +905,23 @@ class LocalMinerRuntime(
                                 error = null,
                             )
                         }
+                    } else if (currentCoroutineContext().isActive) {
+                        val resumedActiveDrop = currentCampaign.activeDrop(currentDropId)
+                        currentDropId = resumedActiveDrop?.id
+                        updateSnapshot(
+                            RuntimePhase.Watching,
+                            currentCampaign.watchingTask(currentChannel, unlinkedProgressProbe),
+                        ) {
+                            it.copy(
+                                campaigns = markSelected(campaignSnapshot, settings),
+                                channels = channels.markWatching(currentChannel.id),
+                                currentChannel = currentChannel,
+                                activeCampaign = currentCampaign,
+                                activeDrop = resumedActiveDrop,
+                                progressSummary = listOf(currentCampaign).progressSummary(),
+                                error = null,
+                            )
+                        }
                     }
                 }
 
@@ -893,11 +940,13 @@ class LocalMinerRuntime(
                     if (higherPriorityDecisions.isNotEmpty()) {
                         val skippedChannelIds = failedChannelSkips.keys.toSet()
                         higherPriorityCheck = CoroutineScope(currentCoroutineContext()).async {
-                            findHigherPriorityWork(
-                                session = session,
-                                decisions = higherPriorityDecisions,
-                                skippedChannelIds = skippedChannelIds,
-                            )
+                            runCatchingCancellable {
+                                findHigherPriorityWork(
+                                    session = session,
+                                    decisions = higherPriorityDecisions,
+                                    skippedChannelIds = skippedChannelIds,
+                                )
+                            }
                         }
                     }
                     nextHigherPriorityCheckAt = now.plus(HigherPriorityChannelCheckInterval)
@@ -909,7 +958,7 @@ class LocalMinerRuntime(
                     }
                 }
             }
-            higherPriorityCheck?.cancel()
+            higherPriorityCheck?.cancelAndJoin()
         }
     }
 
@@ -957,8 +1006,11 @@ class LocalMinerRuntime(
                 continue
             }
             var currentCampaign = updatedCampaigns.firstOrNull { it.id == campaign.id } ?: campaign
-            for (drop in currentCampaign.drops.inEarningOrder()) {
-                if (drop.isClaimed || (!drop.hasCompletedProgress && !drop.canClaim)) {
+            for (orderedDrop in currentCampaign.drops.inEarningOrder()) {
+                val drop = currentCampaign.drops.firstOrNull { candidate ->
+                    candidate.id == orderedDrop.id
+                } ?: continue
+                if (currentCampaign.claimableDropsInEarningOrder().none { candidate -> candidate.id == drop.id }) {
                     continue
                 }
                 if (dropClaimHandler.suppressionFor(session, currentCampaign, drop) != null) {
@@ -1394,16 +1446,15 @@ class LocalMinerRuntime(
         session: StoredTwitchSession,
         campaign: Campaign,
     ): CampaignDrop? {
-        return campaign.drops.inEarningOrder().firstOrNull { drop ->
-            !drop.isClaimed &&
-                (drop.canClaim || drop.hasCompletedProgress) &&
-                dropClaimHandler.suppressionFor(session, campaign, drop) == null
+        return campaign.claimableDropsInEarningOrder().firstOrNull { drop ->
+            dropClaimHandler.suppressionFor(session, campaign, drop) == null
         }
     }
 
     private fun markSelected(campaigns: List<Campaign>, settings: AppSettings): List<Campaign> =
         campaigns.map { campaign ->
-            campaign.copy(selected = settings.isCampaignSelected(campaign))
+            val selected = settings.isCampaignSelected(campaign)
+            if (campaign.selected == selected) campaign else campaign.copy(selected = selected)
         }
 
     private suspend fun awaitUsableNetwork(): Boolean {
@@ -1509,6 +1560,20 @@ private fun Campaign.watchingTask(
         else -> "Watching ${channel.name}"
     }
 
+private fun RuntimeSnapshot.matchesActiveWatch(
+    campaign: Campaign,
+    channel: Channel,
+    drop: CampaignDrop,
+    task: String,
+): Boolean =
+    phase == RuntimePhase.Watching &&
+        currentTask == task &&
+        currentChannel == channel &&
+        activeCampaign == campaign &&
+        activeDrop == drop &&
+        !channelSearchInProgress &&
+        error == null
+
 internal sealed class TwitchProgressUpdate {
     data class Updated(val campaign: Campaign) : TwitchProgressUpdate()
     object UnexpectedDrop : TwitchProgressUpdate()
@@ -1527,11 +1592,10 @@ internal fun Campaign.applyTwitchProgress(progress: CurrentDropProgress): Twitch
         updateDrop(progress.dropId) { drop ->
             val required = drop.requiredMinutes.coerceAtLeast(0)
             val reported = progress.currentMinutes.coerceIn(0, required)
-            val current = maxOf(drop.currentMinutes.coerceIn(0, required), reported)
             drop.copy(
-                currentMinutes = current,
-                progress = if (required == 0) 0f else current.toFloat() / required,
-                canClaim = required > 0 && current >= required && !drop.isClaimed,
+                currentMinutes = reported,
+                progress = if (required == 0) 0f else reported.toFloat() / required,
+                canClaim = required > 0 && reported >= required && !drop.isClaimed,
             )
         },
     )
@@ -1730,6 +1794,7 @@ internal object CampaignPrioritySelector {
             .withoutExcludedCampaigns(settings)
             .filter { campaign ->
                 !campaign.isLocallyComplete &&
+                    campaign.activeDrop() != null &&
                     (
                         campaign.canEarnLocally ||
                             (settings.fallbackToOtherGames && campaign.canTryUnlinkedLocally)
@@ -1769,10 +1834,21 @@ internal object CampaignPrioritySelector {
 
     fun modeForCampaign(settings: AppSettings, campaign: Campaign): CampaignSelectionMode? {
         if (settings.isGamePrioritized(campaign.gameName)) {
-            return CampaignSelectionMode.Prioritized
+            return if (
+                campaign.canEarnLocally ||
+                (settings.fallbackToOtherGames && campaign.canTryUnlinkedLocally)
+            ) {
+                CampaignSelectionMode.Prioritized
+            } else {
+                null
+            }
         }
         if (!settings.fallbackToOtherGames) {
-            return if (campaign.canEarnLocally) CampaignSelectionMode.Auto else null
+            return if (!settings.hasGamePriority && campaign.canEarnLocally) {
+                CampaignSelectionMode.Auto
+            } else {
+                null
+            }
         }
         return when {
             campaign.linked && campaign.hasClaimedDropProgress ->
@@ -1932,13 +2008,18 @@ internal object CampaignPrioritySelector {
     private fun autoCandidates(settings: AppSettings, campaigns: List<Campaign>): List<Campaign> =
         campaigns
             .withoutExcludedCampaigns(settings)
-            .filter { it.canEarnLocally && !it.isLocallyComplete }
+            .filter { campaign ->
+                campaign.canEarnLocally &&
+                    !campaign.isLocallyComplete &&
+                    campaign.activeDrop() != null
+            }
 
     private fun fallbackCandidates(settings: AppSettings, campaigns: List<Campaign>): List<Campaign> =
         campaigns
             .withoutExcludedCampaigns(settings)
             .filter { campaign ->
                 !campaign.isLocallyComplete &&
+                    campaign.activeDrop() != null &&
                     (campaign.canEarnLocally || campaign.canTryUnlinkedLocally) &&
                     (!settings.hasGamePriority || !settings.isGamePrioritized(campaign.gameName))
             }

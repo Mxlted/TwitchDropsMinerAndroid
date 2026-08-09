@@ -2,6 +2,7 @@ package com.nathan.twitchdropsminer.android
 
 import com.nathan.twitchdropsminer.android.data.local.BoundedLogBuffer
 import com.nathan.twitchdropsminer.android.data.model.AppSettings
+import com.nathan.twitchdropsminer.android.data.model.AutoModePriority
 import com.nathan.twitchdropsminer.android.data.model.BackendConsole
 import com.nathan.twitchdropsminer.android.data.model.Campaign
 import com.nathan.twitchdropsminer.android.data.model.CampaignDrop
@@ -674,6 +675,60 @@ class RuntimeStateTest {
                 CampaignSelectionMode.UnlinkedViewingProgress to listOf("campaign-unlinked-viewing"),
                 CampaignSelectionMode.LinkedFallback to listOf("campaign-linked-fresh"),
                 CampaignSelectionMode.Unlinked to listOf("campaign-unlinked-fresh"),
+            ),
+            stages,
+        )
+        assertTrue(decision is CampaignCandidateDecision.Idle)
+    }
+
+    @Test
+    fun autoModeUsesTheSavedCustomPriorityOrder() {
+        val linkedClaimed = claimedProgressCampaign("campaign-linked-claimed", "Linked Claimed", linked = true)
+        val unlinkedClaimed = claimedProgressCampaign("campaign-unlinked-claimed", "Unlinked Claimed", linked = false)
+        val linkedViewing = earnableCampaign("campaign-linked-viewing", "Linked Viewing", currentMinutes = 5)
+        val unlinkedViewing = unlinkedCampaign("campaign-unlinked-viewing", "Unlinked Viewing", currentMinutes = 5)
+        val linkedFresh = earnableCampaign("campaign-linked-fresh", "Linked Fresh")
+        val unlinkedFresh = unlinkedCampaign("campaign-unlinked-fresh", "Unlinked Fresh")
+        val settings = AppSettings(
+            fallbackToOtherGames = true,
+            autoModePriorityOrder = listOf(
+                AutoModePriority.UnlinkedClaimedProgress,
+                AutoModePriority.UnlinkedViewingProgress,
+                AutoModePriority.LinkedFresh,
+                AutoModePriority.LinkedClaimedProgress,
+                AutoModePriority.LinkedViewingProgress,
+                AutoModePriority.UnlinkedFresh,
+            ),
+        ).normalized()
+        val campaigns = listOf(
+            linkedClaimed,
+            unlinkedClaimed,
+            linkedViewing,
+            unlinkedViewing,
+            linkedFresh,
+            unlinkedFresh,
+        )
+        var decision = CampaignPrioritySelector.initialDecision(settings, campaigns)
+        val stages = mutableListOf<CampaignSelectionMode>()
+
+        repeat(6) {
+            val stage = decision as CampaignCandidateDecision.Try
+            stages += stage.mode
+            decision = CampaignPrioritySelector.afterNoChannelDecision(
+                settings = settings,
+                campaigns = campaigns,
+                mode = stage.mode,
+            )
+        }
+
+        assertEquals(
+            listOf(
+                CampaignSelectionMode.UnlinkedClaimedProgress,
+                CampaignSelectionMode.UnlinkedViewingProgress,
+                CampaignSelectionMode.Auto,
+                CampaignSelectionMode.LinkedClaimedProgress,
+                CampaignSelectionMode.LinkedViewingProgress,
+                CampaignSelectionMode.Unlinked,
             ),
             stages,
         )

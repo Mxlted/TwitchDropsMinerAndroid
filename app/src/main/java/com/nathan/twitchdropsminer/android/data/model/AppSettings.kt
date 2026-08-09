@@ -14,6 +14,7 @@ data class AppSettings(
     val runInForeground: Boolean = true,
     val keepActiveScreenMode: Boolean = false,
     val fallbackToOtherGames: Boolean = false,
+    val autoModePriorityOrder: List<AutoModePriority> = AutoModePriority.DefaultOrder,
     val excludedCampaignIds: Set<String> = emptySet(),
     // Legacy campaign IDs are retained so older saved preferences keep loading.
     val selectedCampaignIds: Set<String> = emptySet(),
@@ -85,6 +86,7 @@ data class AppSettings(
             backendUrl = normalizedBackendUrl,
             watchIntervalSeconds = normalizedWatchInterval,
             inventoryRefreshMinutes = normalizedRefresh,
+            autoModePriorityOrder = AutoModePriority.normalize(autoModePriorityOrder),
             excludedCampaignIds = normalizedExcludedCampaignIds,
             selectedGames = normalizedGamePriority.toSet(),
             selectedGamePriority = normalizedGamePriority,

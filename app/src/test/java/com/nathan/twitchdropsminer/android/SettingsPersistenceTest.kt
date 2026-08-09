@@ -3,10 +3,12 @@ package com.nathan.twitchdropsminer.android
 import androidx.datastore.preferences.core.mutablePreferencesOf
 import androidx.datastore.preferences.core.preferencesOf
 import com.nathan.twitchdropsminer.android.data.local.CampaignExclusionIds
+import com.nathan.twitchdropsminer.android.data.local.AutoModePriorityOrder
 import com.nathan.twitchdropsminer.android.data.local.GamePriorityCleanup
 import com.nathan.twitchdropsminer.android.data.local.GamePriorityOrder
 import com.nathan.twitchdropsminer.android.data.local.SettingsPreferencesMapper
 import com.nathan.twitchdropsminer.android.data.model.AppSettings
+import com.nathan.twitchdropsminer.android.data.model.AutoModePriority
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -99,6 +101,48 @@ class SettingsPersistenceTest {
         val settings = SettingsPreferencesMapper.fromPreferences(preferencesOf())
 
         assertFalse(settings.fallbackToOtherGames)
+        assertEquals(AutoModePriority.DefaultOrder, settings.autoModePriorityOrder)
+    }
+
+    @Test
+    fun savedAutoModePriorityOrderIsRestoredAndCompleted() {
+        val settings = SettingsPreferencesMapper.fromPreferences(
+            preferencesOf(
+                SettingsPreferencesMapper.AutoModePriorityOrder to
+                    """["unlinked_viewing_progress","linked_fresh","unlinked_viewing_progress","unknown"]""",
+            ),
+        )
+
+        assertEquals(
+            listOf(
+                AutoModePriority.UnlinkedViewingProgress,
+                AutoModePriority.LinkedFresh,
+                AutoModePriority.LinkedClaimedProgress,
+                AutoModePriority.UnlinkedClaimedProgress,
+                AutoModePriority.LinkedViewingProgress,
+                AutoModePriority.UnlinkedFresh,
+            ),
+            settings.autoModePriorityOrder,
+        )
+    }
+
+    @Test
+    fun autoModePriorityOptionsMoveSequentially() {
+        assertEquals(
+            listOf(
+                AutoModePriority.UnlinkedClaimedProgress,
+                AutoModePriority.LinkedClaimedProgress,
+                AutoModePriority.LinkedViewingProgress,
+                AutoModePriority.UnlinkedViewingProgress,
+                AutoModePriority.LinkedFresh,
+                AutoModePriority.UnlinkedFresh,
+            ),
+            AutoModePriorityOrder.move(
+                current = AutoModePriority.DefaultOrder,
+                option = AutoModePriority.UnlinkedClaimedProgress,
+                offset = -1,
+            ),
+        )
     }
 
     @Test

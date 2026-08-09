@@ -35,6 +35,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import com.nathan.twitchdropsminer.android.R
+import com.nathan.twitchdropsminer.android.data.model.AutoModePriority
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -78,6 +79,7 @@ fun TwitchDropsMinerApp(
     onEnterDimScreen: () -> Unit,
     onExitDimScreen: () -> Unit,
     onFallbackToOtherGamesChanged: (Boolean) -> Unit,
+    onMoveAutoModePriority: (AutoModePriority, Int) -> Unit,
     onAdvancedBackendModeChanged: (Boolean) -> Unit,
     onSaveBackendUrl: (String) -> Unit,
     onDebugLoggingChanged: (Boolean) -> Unit,
@@ -119,6 +121,7 @@ fun TwitchDropsMinerApp(
                     onKeepActiveScreenModeChanged = onKeepActiveScreenModeChanged,
                     onEnterDimScreen = onEnterDimScreen,
                     onFallbackToOtherGamesChanged = onFallbackToOtherGamesChanged,
+                    onMoveAutoModePriority = onMoveAutoModePriority,
                     onAdvancedBackendModeChanged = onAdvancedBackendModeChanged,
                     onSaveBackendUrl = onSaveBackendUrl,
                     onDebugLoggingChanged = onDebugLoggingChanged,
@@ -153,6 +156,7 @@ private fun MainScaffold(
     onKeepActiveScreenModeChanged: (Boolean) -> Unit,
     onEnterDimScreen: () -> Unit,
     onFallbackToOtherGamesChanged: (Boolean) -> Unit,
+    onMoveAutoModePriority: (AutoModePriority, Int) -> Unit,
     onAdvancedBackendModeChanged: (Boolean) -> Unit,
     onSaveBackendUrl: (String) -> Unit,
     onDebugLoggingChanged: (Boolean) -> Unit,
@@ -208,6 +212,7 @@ private fun MainScaffold(
                     onInventoryRefreshChanged = onInventoryRefreshChanged,
                     onKeepActiveScreenModeChanged = onKeepActiveScreenModeChanged,
                     onFallbackToOtherGamesChanged = onFallbackToOtherGamesChanged,
+                    onMoveAutoModePriority = onMoveAutoModePriority,
                     onAdvancedBackendModeChanged = onAdvancedBackendModeChanged,
                     onSaveBackendUrl = onSaveBackendUrl,
                     onDebugLoggingChanged = onDebugLoggingChanged,

@@ -4,6 +4,7 @@ import com.nathan.twitchdropsminer.android.data.local.LogRepository
 import com.nathan.twitchdropsminer.android.data.local.SecureSessionStore
 import com.nathan.twitchdropsminer.android.data.local.SettingsRepository
 import com.nathan.twitchdropsminer.android.data.model.AppSettings
+import com.nathan.twitchdropsminer.android.data.model.AutoModePriority
 import com.nathan.twitchdropsminer.android.data.model.Campaign
 import com.nathan.twitchdropsminer.android.data.model.CampaignDrop
 import com.nathan.twitchdropsminer.android.data.model.Channel
@@ -1751,7 +1752,9 @@ internal object CampaignPrioritySelector {
         }
 
         return orderedDecisions(settings, selectableCampaigns)
-            .firstOrNull { decision -> decision.mode.priorityRank > mode.priorityRank }
+            .firstOrNull { decision ->
+                decision.mode.priorityRank(settings) > mode.priorityRank(settings)
+            }
             ?: CampaignCandidateDecision.Idle(
                 task = "No fallback game has an eligible live channel",
                 detail = "Priority and all linked or unlinked fallback stages currently have no eligible live channel.",
@@ -1827,7 +1830,9 @@ internal object CampaignPrioritySelector {
     ): List<CampaignCandidateDecision.Try> =
         if (settings.fallbackToOtherGames) {
             orderedDecisions(settings, campaigns)
-                .filter { decision -> decision.mode.priorityRank < currentMode.priorityRank }
+                .filter { decision ->
+                    decision.mode.priorityRank(settings) < currentMode.priorityRank(settings)
+                }
         } else {
             emptyList()
         }
@@ -1958,50 +1963,22 @@ internal object CampaignPrioritySelector {
             campaign.canTryUnlinkedLocally && !campaign.hasClaimedDropProgress && !campaign.hasViewingProgress
         }
 
-        decisions.addStage(
-            mode = CampaignSelectionMode.LinkedClaimedProgress,
-            candidates = linkedClaimed,
-            task = "Trying linked campaigns with claimed-drop progress",
-            detail = "No higher-priority stream is currently available.",
+        val candidatesByPriority = mapOf(
+            AutoModePriority.LinkedClaimedProgress to linkedClaimed,
+            AutoModePriority.UnlinkedClaimedProgress to unlinkedClaimed,
+            AutoModePriority.LinkedViewingProgress to linkedViewing,
+            AutoModePriority.UnlinkedViewingProgress to unlinkedViewing,
+            AutoModePriority.LinkedFresh to linkedFresh,
+            AutoModePriority.UnlinkedFresh to unlinkedFresh,
         )
-        decisions.addStage(
-            mode = CampaignSelectionMode.UnlinkedClaimedProgress,
-            candidates = unlinkedClaimed,
-            task = "Trying unlinked campaigns with claimed-drop progress",
-            detail = "Linked campaigns with claimed-drop progress have no eligible stream.",
-        )
-        decisions.addStage(
-            mode = CampaignSelectionMode.LinkedViewingProgress,
-            candidates = linkedViewing,
-            task = "Trying linked campaigns with viewing progress",
-            detail = "Campaigns with claimed-drop progress have no eligible stream.",
-        )
-        decisions.addStage(
-            mode = CampaignSelectionMode.UnlinkedViewingProgress,
-            candidates = unlinkedViewing,
-            task = "Trying unlinked campaigns with viewing progress",
-            detail = "Linked campaigns with viewing progress have no eligible stream.",
-        )
-        decisions.addStage(
-            mode = if (settings.hasGamePriority) {
-                CampaignSelectionMode.LinkedFallback
-            } else {
-                CampaignSelectionMode.Auto
-            },
-            candidates = linkedFresh,
-            task = if (settings.hasGamePriority) {
-                "Trying linked games outside priority"
-            } else {
-                "Auto Mode selecting linked game"
-            },
-            detail = "No linked or unlinked campaign with existing progress has an eligible stream.",
-        )
-        decisions.addStage(
-            mode = CampaignSelectionMode.Unlinked,
-            candidates = unlinkedFresh,
-            task = "Trying unlinked games",
-            detail = "All higher-priority fallback stages have no eligible stream.",
-        )
+        settings.autoModePriorityOrder.forEach { priority ->
+            decisions.addStage(
+                mode = priority.selectionMode(settings),
+                candidates = candidatesByPriority.getValue(priority),
+                task = priority.selectionTask(settings),
+                detail = "No higher-priority stream is currently available.",
+            )
+        }
         return decisions
     }
 
@@ -2092,16 +2069,55 @@ private val CampaignSelectionMode.isUnlinked: Boolean
         else -> false
     }
 
-private val CampaignSelectionMode.priorityRank: Int
-    get() = when (this) {
-        CampaignSelectionMode.Prioritized -> 0
-        CampaignSelectionMode.LinkedClaimedProgress -> 1
-        CampaignSelectionMode.UnlinkedClaimedProgress -> 2
-        CampaignSelectionMode.LinkedViewingProgress -> 3
-        CampaignSelectionMode.UnlinkedViewingProgress -> 4
+private fun CampaignSelectionMode.priorityRank(settings: AppSettings): Int =
+    if (this == CampaignSelectionMode.Prioritized) {
+        0
+    } else {
+        settings.autoModePriorityOrder.indexOf(autoModePriority()) + 1
+    }
+
+private fun CampaignSelectionMode.autoModePriority(): AutoModePriority =
+    when (this) {
+        CampaignSelectionMode.Prioritized -> error("Prioritized games are outside Auto Mode ordering")
+        CampaignSelectionMode.LinkedClaimedProgress -> AutoModePriority.LinkedClaimedProgress
+        CampaignSelectionMode.UnlinkedClaimedProgress -> AutoModePriority.UnlinkedClaimedProgress
+        CampaignSelectionMode.LinkedViewingProgress -> AutoModePriority.LinkedViewingProgress
+        CampaignSelectionMode.UnlinkedViewingProgress -> AutoModePriority.UnlinkedViewingProgress
         CampaignSelectionMode.Auto,
-        CampaignSelectionMode.LinkedFallback -> 5
-        CampaignSelectionMode.Unlinked -> 6
+        CampaignSelectionMode.LinkedFallback -> AutoModePriority.LinkedFresh
+        CampaignSelectionMode.Unlinked -> AutoModePriority.UnlinkedFresh
+    }
+
+private fun AutoModePriority.selectionMode(settings: AppSettings): CampaignSelectionMode =
+    when (this) {
+        AutoModePriority.LinkedClaimedProgress -> CampaignSelectionMode.LinkedClaimedProgress
+        AutoModePriority.UnlinkedClaimedProgress -> CampaignSelectionMode.UnlinkedClaimedProgress
+        AutoModePriority.LinkedViewingProgress -> CampaignSelectionMode.LinkedViewingProgress
+        AutoModePriority.UnlinkedViewingProgress -> CampaignSelectionMode.UnlinkedViewingProgress
+        AutoModePriority.LinkedFresh -> if (settings.hasGamePriority) {
+            CampaignSelectionMode.LinkedFallback
+        } else {
+            CampaignSelectionMode.Auto
+        }
+        AutoModePriority.UnlinkedFresh -> CampaignSelectionMode.Unlinked
+    }
+
+private fun AutoModePriority.selectionTask(settings: AppSettings): String =
+    when (this) {
+        AutoModePriority.LinkedClaimedProgress ->
+            "Trying linked campaigns with claimed-drop progress"
+        AutoModePriority.UnlinkedClaimedProgress ->
+            "Trying unlinked campaigns with claimed-drop progress"
+        AutoModePriority.LinkedViewingProgress ->
+            "Trying linked campaigns with viewing progress"
+        AutoModePriority.UnlinkedViewingProgress ->
+            "Trying unlinked campaigns with viewing progress"
+        AutoModePriority.LinkedFresh -> if (settings.hasGamePriority) {
+            "Trying linked games outside priority"
+        } else {
+            "Auto Mode selecting linked game"
+        }
+        AutoModePriority.UnlinkedFresh -> "Trying unlinked games"
     }
 
 private fun CampaignSelectionMode.selectionTask(candidate: Campaign): String =

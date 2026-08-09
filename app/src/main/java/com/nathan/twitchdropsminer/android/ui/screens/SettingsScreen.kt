@@ -30,6 +30,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.nathan.twitchdropsminer.android.data.model.AppSettings
+import com.nathan.twitchdropsminer.android.data.model.AutoModePriority
 import com.nathan.twitchdropsminer.android.ui.theme.AppMuted
 
 @Composable
@@ -41,6 +42,7 @@ fun SettingsScreen(
     onInventoryRefreshChanged: (Int) -> Unit,
     onKeepActiveScreenModeChanged: (Boolean) -> Unit,
     onFallbackToOtherGamesChanged: (Boolean) -> Unit,
+    onMoveAutoModePriority: (AutoModePriority, Int) -> Unit,
     onAdvancedBackendModeChanged: (Boolean) -> Unit,
     onSaveBackendUrl: (String) -> Unit,
     onDebugLoggingChanged: (Boolean) -> Unit,
@@ -183,10 +185,29 @@ fun SettingsScreen(
             )
             ToggleRow(
                 title = "Fallback to other games",
-                subtitle = "Priority games first, then linked/unlinked campaigns with claimed drops, linked/unlinked campaigns with viewing progress, and finally fresh linked/unlinked games.",
+                subtitle = "Try the Auto Mode groups below when preferred work is unavailable.",
                 checked = settings.fallbackToOtherGames,
                 onCheckedChange = onFallbackToOtherGamesChanged,
             )
+            Text(
+                text = "Auto Mode priority",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = "Selected game priorities always run first. Move these groups to choose which remaining campaigns are tried next.",
+                color = AppMuted,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            settings.autoModePriorityOrder.forEachIndexed { index, option ->
+                AutoModePriorityRow(
+                    position = index + 1,
+                    option = option,
+                    canMoveEarlier = index > 0,
+                    canMoveLater = index < settings.autoModePriorityOrder.lastIndex,
+                    onMove = { offset -> onMoveAutoModePriority(option, offset) },
+                )
+            }
         }
 
         SectionCard {
@@ -251,6 +272,50 @@ fun SettingsScreen(
                     color = AppMuted,
                     style = MaterialTheme.typography.bodySmall,
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AutoModePriorityRow(
+    position: Int,
+    option: AutoModePriority,
+    canMoveEarlier: Boolean,
+    canMoveLater: Boolean,
+    onMove: (Int) -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            text = "$position. ${option.title}",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text = option.description,
+            style = MaterialTheme.typography.bodySmall,
+            color = AppMuted,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedButton(
+                onClick = { onMove(-1) },
+                modifier = Modifier.weight(1f),
+                enabled = canMoveEarlier,
+            ) {
+                Text("Move Earlier")
+            }
+            OutlinedButton(
+                onClick = { onMove(1) },
+                modifier = Modifier.weight(1f),
+                enabled = canMoveLater,
+            ) {
+                Text("Move Later")
             }
         }
     }

@@ -11,6 +11,7 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.nathan.twitchdropsminer.android.data.model.AppSettings
+import com.nathan.twitchdropsminer.android.data.model.AutoModePriority
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.decodeFromString
@@ -136,6 +137,21 @@ class SettingsRepository(
         }
     }
 
+    suspend fun moveAutoModePriority(option: AutoModePriority, offset: Int) {
+        if (offset == 0) {
+            return
+        }
+        update { settings ->
+            settings.copy(
+                autoModePriorityOrder = AutoModePriorityOrder.move(
+                    current = settings.autoModePriorityOrder,
+                    option = option,
+                    offset = offset,
+                ),
+            )
+        }
+    }
+
     suspend fun removeGamePrioritiesWithoutAvailableCampaigns(
         availableGameNames: Collection<String>,
     ): List<String> {
@@ -217,6 +233,26 @@ internal object GamePriorityOrder {
         indexOfFirst { it.equals(gameName, ignoreCase = true) }
 }
 
+internal object AutoModePriorityOrder {
+    fun move(
+        current: List<AutoModePriority>,
+        option: AutoModePriority,
+        offset: Int,
+    ): List<AutoModePriority> {
+        val ordered = AutoModePriority.normalize(current).toMutableList()
+        if (offset == 0) {
+            return ordered
+        }
+        val currentIndex = ordered.indexOf(option)
+        val targetIndex = (currentIndex + offset).coerceIn(0, ordered.lastIndex)
+        if (currentIndex == targetIndex) {
+            return ordered
+        }
+        ordered.add(targetIndex, ordered.removeAt(currentIndex))
+        return ordered
+    }
+}
+
 internal data class GamePriorityCleanupResult(
     val retainedPriority: List<String>,
     val removedGames: List<String>,
@@ -292,6 +328,7 @@ object SettingsPreferencesMapper {
     val RunInForeground = booleanPreferencesKey("run_in_foreground")
     val KeepActiveScreenMode = booleanPreferencesKey("keep_active_screen_mode")
     val FallbackToOtherGames = booleanPreferencesKey("fallback_to_other_games")
+    val AutoModePriorityOrder = stringPreferencesKey("auto_mode_priority_order")
     val LegacyFallbackToAutoWhenPrioritizedComplete =
         booleanPreferencesKey("fallback_to_auto_when_prioritized_complete")
     val LegacyFallbackToAutoWhenNoPrioritizedChannel =
@@ -320,6 +357,7 @@ object SettingsPreferencesMapper {
             keepActiveScreenMode = preferences[KeepActiveScreenMode] ?: false,
             fallbackToOtherGames = preferences[FallbackToOtherGames]
                 ?: legacyFallbackEnabled(preferences),
+            autoModePriorityOrder = decodeAutoModePriorityOrder(preferences[AutoModePriorityOrder]),
             excludedCampaignIds = preferences[ExcludedCampaignIds] ?: emptySet(),
             selectedCampaignIds = preferences[SelectedCampaignIds] ?: emptySet(),
             selectedGames = preferences[SelectedGames] ?: emptySet(),
@@ -338,6 +376,9 @@ object SettingsPreferencesMapper {
         preferences[RunInForeground] = settings.runInForeground
         preferences[KeepActiveScreenMode] = settings.keepActiveScreenMode
         preferences[FallbackToOtherGames] = settings.fallbackToOtherGames
+        preferences[AutoModePriorityOrder] = SettingsJson.encodeToString(
+            settings.autoModePriorityOrder.map(AutoModePriority::storageKey),
+        )
         preferences.remove(LegacyFallbackToAutoWhenPrioritizedComplete)
         preferences.remove(LegacyFallbackToAutoWhenNoPrioritizedChannel)
         preferences.remove(LegacyAllowWatchingUnlinkedGames)
@@ -370,5 +411,15 @@ object SettingsPreferencesMapper {
         return runCatching {
             SettingsJson.decodeFromString<List<String>>(value)
         }.getOrDefault(emptyList())
+    }
+
+    private fun decodeAutoModePriorityOrder(value: String?): List<AutoModePriority> {
+        if (value.isNullOrBlank()) {
+            return AutoModePriority.DefaultOrder
+        }
+        return runCatching {
+            SettingsJson.decodeFromString<List<String>>(value)
+                .mapNotNull(AutoModePriority::fromStorageKey)
+        }.getOrDefault(AutoModePriority.DefaultOrder)
     }
 }

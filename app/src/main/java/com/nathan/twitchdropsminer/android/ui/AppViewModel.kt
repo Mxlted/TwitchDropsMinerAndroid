@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.nathan.twitchdropsminer.android.data.backend.BackendUrlValidator
 import com.nathan.twitchdropsminer.android.data.model.AppSettings
+import com.nathan.twitchdropsminer.android.data.model.AutoModePriority
 import com.nathan.twitchdropsminer.android.data.model.LocalLogEntry
 import com.nathan.twitchdropsminer.android.data.model.RuntimeSnapshot
 import com.nathan.twitchdropsminer.android.di.AppGraph
@@ -195,6 +196,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             graph.settingsRepository.update {
                 it.copy(fallbackToOtherGames = enabled)
             }
+        }
+    }
+
+    fun moveAutoModePriority(option: AutoModePriority, offset: Int) {
+        viewModelScope.launch {
+            graph.settingsRepository.moveAutoModePriority(option, offset)
         }
     }
 

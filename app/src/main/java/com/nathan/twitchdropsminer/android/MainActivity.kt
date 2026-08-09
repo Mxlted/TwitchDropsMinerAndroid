@@ -70,6 +70,7 @@ class MainActivity : ComponentActivity() {
                 onEnterDimScreen = viewModel::enterDimScreen,
                 onExitDimScreen = viewModel::exitDimScreen,
                 onFallbackToOtherGamesChanged = viewModel::setFallbackToOtherGames,
+                onMoveAutoModePriority = viewModel::moveAutoModePriority,
                 onAdvancedBackendModeChanged = viewModel::setAdvancedBackendMode,
                 onSaveBackendUrl = viewModel::saveBackendUrl,
                 onDebugLoggingChanged = viewModel::setDebugLogging,
